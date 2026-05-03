@@ -1,0 +1,9 @@
+runtime_kind: llama-cpp
+version: 0.1.0
+display_name: llama.cpp
+description: |
+  Runtime gateway for llama.cpp-family inference workers (mass-worker-llama-cpp).
+  Serves chat, embed, tokenize via typed API and OpenAI-compatible shim.
+supported_formats:
+  - gguf
+binary: bin/mass-runtime-llama-cpp
