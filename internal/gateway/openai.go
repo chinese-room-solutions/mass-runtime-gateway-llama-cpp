@@ -100,9 +100,12 @@ func (h *handlers) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("model: invalid path %q", req.Model))
 		return
 	}
-	hints, _ := buildLoadHints(nil, llamacpp.LoadKind_LOAD_KIND_CHAT, "")
+	hints, files, err := h.buildLoadArtifacts(req.Model, nil, llamacpp.LoadKind_LOAD_KIND_CHAT)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	modelID := model.ID(storePath, hints)
-	hintsBytes := mustEncodeHints(hints)
 
 	pbMsgs := make([]*llamacpp.ChatMessage, len(req.Messages))
 	for i, m := range req.Messages {
@@ -125,17 +128,7 @@ func (h *handlers) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 			Stream: req.Stream,
 		}},
 	}
-	jobBytes, err := payload.EncodeJob(job)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	chunks, err := h.scheduler.Schedule(r.Context(), sched.ScheduleParams{
-		ModelID:       modelID,
-		Payload:       jobBytes,
-		AutoLoad:      true,
-		LastLoadHints: hintsBytes,
-	})
+	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -237,9 +230,12 @@ func (h *handlers) handleOpenAIEmbed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("model: invalid path %q", req.Model))
 		return
 	}
-	hints, _ := buildLoadHints(nil, llamacpp.LoadKind_LOAD_KIND_EMBEDDING, "")
+	hints, files, err := h.buildLoadArtifacts(req.Model, nil, llamacpp.LoadKind_LOAD_KIND_EMBEDDING)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	modelID := model.ID(storePath, hints)
-	hintsBytes := mustEncodeHints(hints)
 
 	inputs := normaliseEmbedInput(req.Input)
 	if len(inputs) == 0 {
@@ -259,17 +255,7 @@ func (h *handlers) handleOpenAIEmbed(w http.ResponseWriter, r *http.Request) {
 			Body: &llamacpp.Job_BatchEmbed{BatchEmbed: &llamacpp.BatchEmbedJob{Inputs: inputs}},
 		}
 	}
-	jobBytes, err := payload.EncodeJob(job)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	chunks, err := h.scheduler.Schedule(r.Context(), sched.ScheduleParams{
-		ModelID:       modelID,
-		Payload:       jobBytes,
-		AutoLoad:      true,
-		LastLoadHints: hintsBytes,
-	})
+	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -299,14 +285,19 @@ func (h *handlers) handleOpenAIEmbed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
-	files, err := h.scheduler.ListModels(r.Context(), "gguf")
+	_ = r
+	infos, err := h.cache.walkAndParseModels(formatRoot(h.modelsDir))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	data := make([]openAIModelRef, len(files))
-	for i, f := range files {
-		data[i] = openAIModelRef{ID: f.GetId(), Object: "model", OwnedBy: "llama-cpp"}
+	data := make([]openAIModelRef, 0, len(infos))
+	for _, info := range infos {
+		// /v1/models hides companion files — apps never select them directly.
+		if info.Companion != "" {
+			continue
+		}
+		data = append(data, openAIModelRef{ID: info.ID, Object: "model", OwnedBy: "llama-cpp"})
 	}
 	writeJSON(w, http.StatusOK, openAIModelsResponse{Object: "list", Data: data})
 }

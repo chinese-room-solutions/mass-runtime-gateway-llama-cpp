@@ -74,7 +74,10 @@ func (m *Meta) GetArrayLen(key string) int {
 }
 
 // Summary returns a small string→string map suitable for the Models tab.
-// Keys are short and human-readable.
+// Keys are short and human-readable. Identity-relevant fields
+// (architecture, name, basename, size_label, finetune, version,
+// organization, quantized_by, quant) are surfaced so the gateway can
+// build identity tuples without re-reading the raw KV map.
 func (m *Meta) Summary() map[string]string {
 	out := map[string]string{}
 	if v := m.GetString("general.architecture"); v != "" {
@@ -82,6 +85,24 @@ func (m *Meta) Summary() map[string]string {
 	}
 	if v := m.GetString("general.name"); v != "" {
 		out["name"] = v
+	}
+	if v := m.GetString("general.basename"); v != "" {
+		out["basename"] = v
+	}
+	if v := m.GetString("general.size_label"); v != "" {
+		out["size_label"] = v
+	}
+	if v := m.GetString("general.finetune"); v != "" {
+		out["finetune"] = v
+	}
+	if v := m.GetString("general.version"); v != "" {
+		out["version"] = v
+	}
+	if v := m.GetString("general.organization"); v != "" {
+		out["organization"] = v
+	}
+	if v := m.GetString("general.quantized_by"); v != "" {
+		out["quantized_by"] = v
 	}
 	if v := m.GetString("general.file_type"); v != "" {
 		out["quant"] = v
@@ -107,8 +128,23 @@ func (m *Meta) Summary() map[string]string {
 			out["vocab"] = fmt.Sprintf("%d", vc)
 		}
 	}
-	if HasThinkingTemplate(m.GetString("tokenizer.chat_template")) {
-		out["thinking"] = "true"
+	if tmpl := m.GetString("tokenizer.chat_template"); tmpl != "" {
+		out["chat_template_present"] = "true"
+		if HasThinkingTemplate(tmpl) {
+			out["thinking"] = "true"
+		}
+	}
+	// Embedding signal: GGUF embedding models set <arch>.pooling_type
+	// (mean / cls / last). Chat models leave it unset. This is the
+	// most reliable runtime-agnostic signal — some embedding models
+	// also ship a chat template (e.g. Qwen3-Embedding) so template
+	// presence alone misclassifies them. Presence-check via the raw
+	// KV map: pooling_type=0 (NONE) is still a meaningful "embedding
+	// model declared its pooling" signal.
+	if arch != "" {
+		if _, ok := m.KV[arch+".pooling_type"]; ok {
+			out["pooling_type_present"] = "true"
+		}
 	}
 	out["tensors"] = fmt.Sprintf("%d", m.TensorCount)
 	return out
@@ -128,8 +164,10 @@ func HasThinkingTemplate(rawChatTemplate string) bool {
 		strings.Contains(t, "reasoning_content")
 }
 
-// ggufFileTypeName maps the numeric GGUF file_type enum to a short tag.
-// Subset; unknown values fall back to a numeric label.
+// ggufFileTypeName maps the numeric GGUF file_type enum to a short
+// tag. Values mirror llama.cpp's `enum llama_ftype` in llama.h. Unknown
+// values fall back to a numeric label so unfamiliar quants render
+// something useful instead of being dropped.
 func ggufFileTypeName(t uint32) string {
 	names := map[uint32]string{
 		0:  "F32",
@@ -140,11 +178,33 @@ func ggufFileTypeName(t uint32) string {
 		8:  "Q5_0",
 		9:  "Q5_1",
 		10: "Q2_K",
-		11: "Q3_K",
-		12: "Q4_K",
-		13: "Q5_K",
-		14: "Q6_K",
-		15: "Q8_K",
+		11: "Q3_K_S",
+		12: "Q3_K_M",
+		13: "Q3_K_L",
+		14: "Q4_K_S",
+		15: "Q4_K_M",
+		16: "Q5_K_S",
+		17: "Q5_K_M",
+		18: "Q6_K",
+		19: "IQ2_XXS",
+		20: "IQ2_XS",
+		21: "Q2_K_S",
+		22: "IQ3_XS",
+		23: "IQ3_XXS",
+		24: "IQ1_S",
+		25: "IQ4_NL",
+		26: "IQ3_S",
+		27: "IQ3_M",
+		28: "IQ2_S",
+		29: "IQ2_M",
+		30: "IQ4_XS",
+		31: "IQ1_M",
+		32: "BF16",
+		33: "Q4_0_4_4",
+		34: "Q4_0_4_8",
+		35: "Q4_0_8_8",
+		36: "TQ1_0",
+		37: "TQ2_0",
 	}
 	if name, ok := names[t]; ok {
 		return name

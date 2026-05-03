@@ -1,0 +1,273 @@
+syntax = "proto3";
+
+package llama_cpp.v1;
+
+option go_package = "github.com/chinese-room-solutions/mass-runtime-llama-cpp/gen/go/llama_cpp/v1;llamacppv1";
+
+// LlamaCppService is the typed inference API exposed by mass-runtime-llama-cpp.
+//
+// The gateway hosts both this gRPC service and an OpenAI-compatible HTTP API.
+// MASS proxies both at /mass.llama-cpp/* paths — gRPC clients dial MASS over
+// h2c (HTTP/2 cleartext) at /mass.llama-cpp/llama_cpp.v1.LlamaCppService/<Method>.
+// HTTP clients hit /mass.llama-cpp/v1/chat/completions etc. Both routes flow
+// through the gateway's HandleRequest stream and are served by the same
+// internal scheduler/dispatch logic.
+//
+// Wire shapes mirror the gateway's existing typed JSON API 1:1 so HTTP and
+// gRPC clients see identical semantics. ConfigOverride is the per-request
+// hook that controls model load behavior; it shadows the OpenAI-compat shim
+// which has no equivalent.
+service LlamaCppService {
+    // Chat is a one-shot chat completion. Returns the full assistant reply.
+    rpc Chat(ChatRequest) returns (ChatResponse);
+
+    // ChatStream returns the assistant reply as a server-streamed sequence
+    // of incremental chunks (delta tokens), terminated by a final chunk
+    // carrying finish_reason + usage.
+    rpc ChatStream(ChatRequest) returns (stream ChatChunk);
+
+    // BatchChat runs N independent chat completions against the same loaded
+    // model. Useful for low-overhead fan-out without N HTTP round trips.
+    rpc BatchChat(BatchChatRequest) returns (BatchChatResponse);
+
+    // Embed returns one embedding vector for one input.
+    rpc Embed(EmbedRequest) returns (EmbedResponse);
+
+    // BatchEmbed returns one vector per input.
+    rpc BatchEmbed(BatchEmbedRequest) returns (BatchEmbedResponse);
+
+    // Tokenize converts text into the model's token IDs (no inference).
+    rpc Tokenize(TokenizeRequest) returns (TokenizeResponse);
+
+    // LoadModel pre-warms a model on a worker without running inference.
+    // Returns once the model is resident on at least one worker.
+    rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+
+    // ListModels returns every gguf file MASS knows about. Identical to the
+    // listing the typed HTTP /v1/Models endpoint returns; mirrored here so
+    // gRPC clients can avoid an out-of-band HTTP call.
+    rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+// --- Shared types ---
+
+// Role is the speaker for a chat message.
+enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_SYSTEM = 1;
+    ROLE_USER = 2;
+    ROLE_ASSISTANT = 3;
+    ROLE_TOOL = 4;
+}
+
+// FinishReason is why generation stopped.
+enum FinishReason {
+    FINISH_REASON_UNSPECIFIED = 0;
+    FINISH_REASON_STOP = 1;          // natural EOS / stop sequence
+    FINISH_REASON_LENGTH = 2;        // hit max_tokens
+    FINISH_REASON_CONTENT_FILTER = 3;
+    FINISH_REASON_TOOL_CALLS = 4;
+}
+
+// CacheType is the KV-cache quantization. Lower bits = less VRAM, slight
+// quality cost. Empty/unspecified leaves the gateway's default.
+enum CacheType {
+    CACHE_TYPE_UNSPECIFIED = 0;
+    CACHE_TYPE_F16 = 1;
+    CACHE_TYPE_Q8_0 = 2;
+    CACHE_TYPE_Q4_0 = 3;
+}
+
+// ContentPart is a single piece of a multimodal chat message. Text-only
+// requests can use Message.content directly; multimodal must use parts.
+message ContentPart {
+    string type = 1;        // "text" | "image" | "audio"
+    string text = 2;        // for type="text"
+    bytes data = 3;         // for type="image"|"audio"
+    string mime_type = 4;   // for type="image"|"audio" (e.g. "image/png")
+}
+
+message Message {
+    Role role = 1;
+    string content = 2;             // simple text (mutually exclusive with parts)
+    repeated ContentPart parts = 3; // multimodal content
+}
+
+message Sampling {
+    optional int32 max_tokens = 1;
+    float temperature = 2;
+    float top_p = 3;
+    int32 top_k = 4;
+    optional int32 seed = 5;
+    repeated string stop = 6;
+    float min_p = 7;
+    float repeat_penalty = 8;
+    float frequency_penalty = 9;
+    float presence_penalty = 10;
+    bool enable_thinking = 11;
+}
+
+// ConfigOverride is per-request load overrides, applied when the model isn't
+// already loaded with matching parameters. Empty fields mean "use gateway
+// default". Identical to the typed JSON `loadConfig` body.
+message ConfigOverride {
+    int32 context_size = 1;
+    optional int32 batch_size = 2;
+    optional int32 gpu_layers = 3;
+    optional bool flash_attn = 4;
+    optional int32 threads = 5;
+    optional int32 max_concurrent = 6;
+    bool thinking = 7;
+    string main_gpu = 8;
+    repeated float tensor_split = 9;
+    string mmproj_filename = 10;    // basename only; lives in the same dir as model
+    string chat_template = 11;
+    CacheType cache_type = 12;
+}
+
+message Usage {
+    int32 prompt_tokens = 1;
+    int32 completion_tokens = 2;
+    int32 total_tokens = 3;
+}
+
+// --- Chat ---
+
+message ChatRequest {
+    string model = 1;                   // store-relative GGUF path
+    ConfigOverride model_config = 2;    // optional load overrides
+    repeated Message messages = 3;
+    Sampling sampling = 4;
+}
+
+message ChatResponse {
+    string id = 1;                      // gateway-assigned UUID
+    string model = 2;
+    Message message = 3;                // assembled assistant reply
+    FinishReason finish_reason = 4;
+    string reasoning_content = 5;       // extracted thinking (when enabled)
+    Usage usage = 6;
+    double tokens_per_second = 7;
+}
+
+// ChatChunk is one server-streamed frame of an in-progress chat completion.
+// Body chunks carry token deltas; the terminal chunk has finish_reason set
+// and (optionally) usage statistics.
+message ChatChunk {
+    string id = 1;                      // gateway-assigned UUID, repeated on every chunk
+    string model = 2;
+
+    // Per-chunk delta. Empty role on continuation chunks; first chunk emits
+    // role="assistant".
+    Message delta = 3;
+    string reasoning_delta = 4;         // incremental thinking-content delta
+
+    // Set on the terminal chunk only.
+    FinishReason finish_reason = 5;
+    Usage usage = 6;
+    double tokens_per_second = 7;
+}
+
+// --- Batch chat ---
+
+message BatchChatRequest {
+    string model = 1;
+    ConfigOverride model_config = 2;
+    repeated BatchChatItem items = 3;
+}
+
+message BatchChatItem {
+    repeated Message messages = 1;
+    Sampling sampling = 2;
+}
+
+message BatchChatResponse {
+    repeated ChatResponse responses = 1;
+}
+
+// --- Embed ---
+
+message EmbedRequest {
+    string model = 1;
+    ConfigOverride model_config = 2;
+    string input = 3;
+}
+
+message EmbedResponse {
+    string id = 1;
+    string model = 2;
+    repeated float embedding = 3;
+}
+
+message BatchEmbedRequest {
+    string model = 1;
+    ConfigOverride model_config = 2;
+    repeated string inputs = 3;
+}
+
+message BatchEmbedResponse {
+    string id = 1;
+    string model = 2;
+    repeated EmbeddingItem embeddings = 3;
+}
+
+message EmbeddingItem {
+    int32 index = 1;
+    repeated float embedding = 2;
+}
+
+// --- Tokenize ---
+
+message TokenizeRequest {
+    string model = 1;
+    ConfigOverride model_config = 2;
+    string text = 3;
+}
+
+message TokenizeResponse {
+    repeated int32 tokens = 1;
+}
+
+// --- Load / list ---
+
+message LoadModelRequest {
+    string model = 1;
+    ConfigOverride model_config = 2;
+    LoadKind kind = 3;
+}
+
+enum LoadKind {
+    LOAD_KIND_UNSPECIFIED = 0;
+    LOAD_KIND_CHAT = 1;
+    LOAD_KIND_EMBEDDING = 2;
+}
+
+message LoadModelResponse {
+    string model_id = 1;        // gateway-internal model fingerprint
+    string worker_id = 2;       // worker that loaded it
+    int32 pool_size = 3;        // concurrent context capacity reported by worker
+}
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+    repeated ModelEntry models = 1;
+}
+
+message ModelEntry {
+    string id = 1;              // store-relative GGUF path
+    int64 size_bytes = 2;
+    ModelCapabilities capabilities = 3;
+    string quantization = 4;    // e.g. "Q4_K_M"; empty when unparseable
+    string model_type = 5;      // "chat" | "embedding" — heuristic from filename
+}
+
+// ModelCapabilities are gateway-detected per-model traits the playground UI
+// uses to enable/disable input affordances (image attachments, thinking
+// toggle, etc.). Detected by ParseModel based on architecture + sibling
+// projector files; same source as the metadata the Models tab in MASS uses.
+message ModelCapabilities {
+    bool vision = 1;        // model accepts image content parts (mmproj sibling present)
+    bool audio = 2;         // model accepts audio content parts
+    bool thinking = 3;      // model emits <think>…</think> reasoning blocks
+}

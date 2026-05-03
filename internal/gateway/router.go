@@ -9,10 +9,12 @@ import (
 
 // routerDeps groups the things every handler needs. Built once during Init.
 type routerDeps struct {
-	params    PluginParams
-	modelsDir string
-	scheduler *sched.Client
-	logger    zerolog.Logger
+	params      PluginParams
+	runtimeName string
+	modelsDir   string
+	scheduler   *sched.Client
+	cache       *metadataCache
+	logger      zerolog.Logger
 }
 
 // newRouter builds the http.ServeMux that handles every request MASS proxies
@@ -49,6 +51,8 @@ func newRouter(d routerDeps) http.Handler {
 	mux.HandleFunc("POST /.v1/Tokenize", h.handleTokenize)
 	mux.HandleFunc("POST /.v1/LoadModel", h.handleLoadModel)
 	mux.HandleFunc("GET /.v1/Models", h.handleListModels)
+	mux.HandleFunc("GET /.v1/Models/Detail", h.handleModelDetailHTML)
+	mux.HandleFunc("DELETE /.v1/Models/{id...}", h.handleDeleteModel)
 	mux.HandleFunc("POST /.v1/Models/Download", h.handleDownload)
 
 	// OpenAI-compat shim. Same endpoints as openai-python; stream is
@@ -60,5 +64,6 @@ func newRouter(d routerDeps) http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found: "+r.URL.Path, http.StatusNotFound)
 	})
-	return mux
+	// Wrap the mux so every handler sees X-Mass-Source on its ctx.
+	return httpSourceMiddleware(mux)
 }

@@ -54,14 +54,14 @@ const (
 )
 
 // ScheduleParams is the gateway-facing argument set for Schedule. Mapping
-// to gatewaypb.ScheduleRequest is mechanical.
+// to gatewaypb.ScheduleRequest is mechanical. Callers must call
+// EnsureModelLoaded before Schedule when the model isn't already resident
+// on a worker — Schedule itself does not auto-load.
 type ScheduleParams struct {
 	ModelID         string
 	Payload         []byte
 	Weight          int32
 	AffinityWorkers []string
-	AutoLoad        bool
-	LastLoadHints   []byte
 }
 
 // Schedule submits a job and returns a channel of streamed chunks. The
@@ -72,8 +72,6 @@ func (c *Client) Schedule(ctx context.Context, p ScheduleParams) (<-chan JobChun
 		Payload:         p.Payload,
 		Weight:          p.Weight,
 		AffinityWorkers: p.AffinityWorkers,
-		AutoLoad:        p.AutoLoad,
-		LastLoadHints:   p.LastLoadHints,
 	})
 	if err != nil {
 		return nil, ctxerr.With(fmt.Errorf("opening schedule stream: %w", err), map[string]any{"model_id": p.ModelID})
@@ -110,29 +108,37 @@ func (c *Client) Schedule(ctx context.Context, p ScheduleParams) (<-chan JobChun
 
 // LoadedInstance mirrors gatewaypb.LoadedInstance with our internal naming.
 type LoadedInstance struct {
-	WorkerID        string
-	PoolSize        int32
-	RuntimeMetadata []byte
+	WorkerID string
+	PoolSize int32
+}
+
+// EnsureModelLoadedParams is the input set for EnsureModelLoaded.
+type EnsureModelLoadedParams struct {
+	ModelID   string
+	Files     []*workerpb.ModelFile
+	LoadHints []byte
+	Preferred []string
+	Source    string // who triggered the load (e.g. "app: playground", "direct"); MASS surfaces in Scheduler tab
 }
 
 // EnsureModelLoaded asks MASS to make sure the model is loaded somewhere.
 // Returns the existing or new instances.
-func (c *Client) EnsureModelLoaded(ctx context.Context, modelID string, files []*workerpb.ModelFile, loadHints []byte, preferred []string) ([]LoadedInstance, error) {
+func (c *Client) EnsureModelLoaded(ctx context.Context, p EnsureModelLoadedParams) ([]LoadedInstance, error) {
 	resp, err := c.c.EnsureModelLoaded(ctx, &gatewaypb.EnsureModelLoadedRequest{
-		ModelId:          modelID,
-		Files:            files,
-		LoadHints:        loadHints,
-		PreferredWorkers: preferred,
+		ModelId:          p.ModelID,
+		Files:            p.Files,
+		LoadHints:        p.LoadHints,
+		PreferredWorkers: p.Preferred,
+		Source:           p.Source,
 	})
 	if err != nil {
-		return nil, ctxerr.With(fmt.Errorf("ensure_model_loaded: %w", err), map[string]any{"model_id": modelID})
+		return nil, ctxerr.With(fmt.Errorf("ensure_model_loaded: %w", err), map[string]any{"model_id": p.ModelID})
 	}
 	out := make([]LoadedInstance, len(resp.GetInstances()))
 	for i, inst := range resp.GetInstances() {
 		out[i] = LoadedInstance{
-			WorkerID:        inst.GetWorkerId(),
-			PoolSize:        inst.GetPoolSize(),
-			RuntimeMetadata: inst.GetRuntimeMetadata(),
+			WorkerID: inst.GetWorkerId(),
+			PoolSize: inst.GetPoolSize(),
 		}
 	}
 	return out, nil
@@ -156,12 +162,3 @@ func (c *Client) ListWorkers(ctx context.Context) ([]*gatewaypb.WorkerSummary, e
 	return resp.GetWorkers(), nil
 }
 
-// ListModels returns the model store entries MASS sees, optionally filtered
-// to one format extension (e.g. "gguf").
-func (c *Client) ListModels(ctx context.Context, formatFilter string) ([]*gatewaypb.ModelFile, error) {
-	resp, err := c.c.ListModels(ctx, &gatewaypb.ListModelsRequest{FormatFilter: formatFilter})
-	if err != nil {
-		return nil, ctxerr.With(fmt.Errorf("list_models: %w", err), nil)
-	}
-	return resp.GetFiles(), nil
-}

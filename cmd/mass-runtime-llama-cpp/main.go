@@ -27,9 +27,9 @@ import (
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-// runtimeKind is the stable identifier for this gateway. Must match
+// runtimeName is the stable identifier for this gateway. Must match
 // runtime.yml and the URL prefix MASS uses (`/mass.llama-cpp.*`).
-const runtimeKind = "llama-cpp"
+const runtimeName = "llama-cpp"
 
 // displayName is used by MASS's Runtimes tab when InitResponse.display_name
 // is empty.
@@ -53,7 +53,7 @@ func main() {
 		HandshakeConfig: gateway.Handshake,
 		Plugins: map[string]plugin.Plugin{
 			gateway.PluginName: gateway.NewPlugin(gateway.PluginParams{
-				RuntimeKind: runtimeKind,
+				RuntimeName: runtimeName,
 				Version:     version,
 				DisplayName: displayName,
 				Logger:      logger,

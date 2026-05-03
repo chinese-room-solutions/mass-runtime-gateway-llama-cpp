@@ -27,7 +27,7 @@ const PluginName = "runtime_gateway"
 
 // PluginParams configures a Plugin instance.
 type PluginParams struct {
-	RuntimeKind string
+	RuntimeName string
 	Version     string
 	DisplayName string
 	Logger      zerolog.Logger

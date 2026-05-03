@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/KernelPryanic/ctxerr"
 	llamacpp "github.com/chinese-room-solutions/mass-proto/gen/go/llama-cpp"
@@ -23,18 +25,22 @@ import (
 // handlers holds the typed-API and OpenAI-compat HTTP handlers. Constructed
 // once per Gateway init.
 type handlers struct {
-	params    PluginParams
-	modelsDir string
-	scheduler *sched.Client
-	logger    zerolog.Logger
+	params      PluginParams
+	runtimeName string
+	modelsDir   string
+	scheduler   *sched.Client
+	cache       *metadataCache
+	logger      zerolog.Logger
 }
 
 func newHandlers(d routerDeps) *handlers {
 	return &handlers{
-		params:    d.params,
-		modelsDir: d.modelsDir,
-		scheduler: d.scheduler,
-		logger:    d.logger.With().Str("component", "handlers").Logger(),
+		params:      d.params,
+		runtimeName: d.runtimeName,
+		modelsDir:   d.modelsDir,
+		scheduler:   d.scheduler,
+		cache:       d.cache,
+		logger:      d.logger.With().Str("component", "handlers").Logger(),
 	}
 }
 
@@ -308,6 +314,14 @@ func (h *handlers) handleBatchChat(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID := model.ID(storePath, hints)
 
+	// Pre-load once for the whole batch — the scheduler short-circuits when
+	// the model is already loaded, so per-item dispatches are pure schedule
+	// calls without re-shipping files.
+	if err := h.ensureLoaded(r.Context(), modelID, hints, files); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
 	out := make([]chatResponse, len(req.Items))
 	for i, item := range req.Items {
 		j := chatJobFromMessages(item.Messages, item.Sampling, false)
@@ -317,17 +331,14 @@ func (h *handlers) handleBatchChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		chunks, err := h.scheduler.Schedule(r.Context(), sched.ScheduleParams{
-			ModelID:       modelID,
-			Payload:       bytesJob,
-			AutoLoad:      true,
-			LastLoadHints: mustEncodeHints(hints),
+			ModelID: modelID,
+			Payload: bytesJob,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		// Drain (single-shot, sync chat).
-		_ = files // files are only consumed by the scheduler if it has to load
 		out[i] = chatResponse{ID: uuid.NewString(), Model: req.Model}
 		for c := range chunks {
 			if c.Type == sched.ChunkCompleted && len(c.Final) > 0 {
@@ -369,7 +380,7 @@ func (h *handlers) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelID := model.ID(storePath, hints)
-	chunks, err := h.dispatchKnown(r.Context(), modelID, job, hints, files)
+	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -413,7 +424,7 @@ func (h *handlers) handleBatchEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelID := model.ID(storePath, hints)
-	chunks, err := h.dispatchKnown(r.Context(), modelID, job, hints, files)
+	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -460,7 +471,7 @@ func (h *handlers) handleTokenize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelID := model.ID(storePath, hints)
-	chunks, err := h.dispatchKnown(r.Context(), modelID, job, hints, files)
+	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -508,7 +519,12 @@ func (h *handlers) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	instances, err := h.scheduler.EnsureModelLoaded(r.Context(), modelID, files, hintsBytes, nil)
+	instances, err := h.scheduler.EnsureModelLoaded(r.Context(), sched.EnsureModelLoadedParams{
+		ModelID:   modelID,
+		Files:     files,
+		LoadHints: hintsBytes,
+		Source:    sourceFromContext(r.Context()),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -525,19 +541,76 @@ func (h *handlers) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) handleListModels(w http.ResponseWriter, r *http.Request) {
-	files, err := h.scheduler.ListModels(r.Context(), "gguf")
+	_ = r
+	infos, err := h.cache.walkAndParseModels(formatRoot(h.modelsDir))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	out := make([]map[string]any, len(files))
-	for i, f := range files {
-		out[i] = map[string]any{
-			"id":         f.GetId(),
-			"size_bytes": f.GetSizeBytes(),
+	out := make([]map[string]any, 0, len(infos))
+	for _, info := range infos {
+		if info.Companion != "" {
+			continue
 		}
+		out = append(out, map[string]any{
+			"id":         info.ID,
+			"size_bytes": info.SizeBytes,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleModelDetailHTML returns the rendered HTML props panel for a single
+// model. Looks up the file via the same shared cache as the list view and
+// renders via [renderModelDetail]. Returns an empty body when the id is
+// missing or the file isn't recognised — MASS leaves the right pane blank
+// in that case instead of surfacing an error.
+func (h *handlers) handleModelDetailHTML(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if id == "" {
+		return
+	}
+	abs := absForStoreID(h.modelsDir, id)
+	info, ok := h.cache.parseModelInfo(abs, id)
+	if !ok {
+		return
+	}
+	if _, err := io.WriteString(w, renderModelDetail(h.runtimeName, info)); err != nil {
+		h.logger.Debug().Err(err).Msg("writing model detail html")
+	}
+}
+
+// handleDeleteModel removes one model file (and its mmproj companion when
+// present) from this runtime's modelsDir. Path is the URL-decoded
+// store-relative ID — the same opaque value emitted in [renderModelsList].
+//
+// We refuse paths that escape modelsDir (defence in depth: filepath.Clean
+// alone won't catch a leading "/" or a Windows-style "C:\..." submitted by
+// a misbehaving caller).
+func (h *handlers) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing model id", http.StatusBadRequest)
+		return
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(id))
+	if strings.HasPrefix(cleaned, "..") || strings.HasPrefix(cleaned, string(filepath.Separator)) || filepath.IsAbs(cleaned) {
+		http.Error(w, "invalid model id", http.StatusBadRequest)
+		return
+	}
+	root := formatRoot(h.modelsDir)
+	abs := filepath.Join(root, cleaned)
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		http.Error(w, "invalid model id", http.StatusBadRequest)
+		return
+	}
+	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+		http.Error(w, "delete model: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handlers) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -572,27 +645,50 @@ func (h *handlers) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 // ----- Shared helpers -----
 
-// dispatch is the common scheduler call for chat (sync + stream). Embed,
-// batch-embed, and tokenize use [dispatchKnown] when they don't need the
-// model-string parsing path.
+// dispatch is the common path for inference: ensure the model is loaded on
+// some worker (passing the file artifacts MASS may need to ship), then
+// submit the job. Used by chat (sync + stream), embed, batch-embed, and
+// tokenize.
+//
+// EnsureModelLoaded is idempotent against modelID — if a worker already has
+// it loaded, the call short-circuits. So calling per-request is cheap on the
+// hot path.
 func (h *handlers) dispatch(ctx context.Context, modelID string, job *llamacpp.Job, hints *llamacpp.LoadHints, files []*workerpb.ModelFile) (<-chan sched.JobChunk, error) {
 	bodyBytes, err := payload.EncodeJob(job)
 	if err != nil {
 		return nil, err
 	}
-	hintsBytes := mustEncodeHints(hints)
-	_ = files // EnsureModelLoaded would need them; we pass via auto-load here
+	if err := h.ensureLoaded(ctx, modelID, hints, files); err != nil {
+		return nil, err
+	}
 	return h.scheduler.Schedule(ctx, sched.ScheduleParams{
-		ModelID:       modelID,
-		Payload:       bodyBytes,
-		AutoLoad:      true,
-		LastLoadHints: hintsBytes,
+		ModelID: modelID,
+		Payload: bodyBytes,
 	})
 }
 
-func (h *handlers) dispatchKnown(ctx context.Context, modelID string, job *llamacpp.Job, hints *llamacpp.LoadHints, files []*workerpb.ModelFile) (<-chan sched.JobChunk, error) {
-	return h.dispatch(ctx, modelID, job, hints, files)
+// ensureLoaded asks MASS to load modelID with the given files + hints if no
+// worker has it resident yet. Wraps the scheduler call in ctxerr so callers
+// get a uniform error shape. Source + kind metadata are taken from the
+// request context (set by the inbound HTTP / gRPC handler) so MASS can
+// attribute the load in its Scheduler tab.
+func (h *handlers) ensureLoaded(ctx context.Context, modelID string, hints *llamacpp.LoadHints, files []*workerpb.ModelFile) error {
+	hintsBytes, err := payload.EncodeLoadHints(hints)
+	if err != nil {
+		return ctxerr.With(fmt.Errorf("encoding load hints: %w", err), map[string]any{"model_id": modelID})
+	}
+	_, err = h.scheduler.EnsureModelLoaded(ctx, sched.EnsureModelLoadedParams{
+		ModelID:   modelID,
+		Files:     files,
+		LoadHints: hintsBytes,
+		Source:    sourceFromContext(ctx),
+	})
+	if err != nil {
+		return ctxerr.With(fmt.Errorf("ensuring model loaded: %w", err), map[string]any{"model_id": modelID})
+	}
+	return nil
 }
+
 
 func (h *handlers) buildChatJob(req *chatRequest, stream bool) (*llamacpp.Job, string, error) {
 	storePath := model.ResolveModelPath(req.Model)
@@ -621,20 +717,18 @@ func (h *handlers) buildLoadArtifacts(modelStr string, cfg *loadConfig, kind lla
 	}
 	hints, _ := buildLoadHints(cfg, kind, cfg.mmprojFilenameOnly())
 
-	abs := filepath.Join(h.modelsDir, filepath.FromSlash(storePath))
 	files := []*workerpb.ModelFile{
 		{
 			Filename:  filepath.Base(storePath),
-			LocalPath: abs,
-			Role:      "primary",
+			LocalPath: absForStoreID(h.modelsDir, storePath),
+			Role:      workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY,
 		},
 	}
 	if mmprojPath != "" {
-		mmAbs := filepath.Join(h.modelsDir, filepath.FromSlash(mmprojPath))
 		files = append(files, &workerpb.ModelFile{
 			Filename:  filepath.Base(mmprojPath),
-			LocalPath: mmAbs,
-			Role:      "mmproj",
+			LocalPath: absForStoreID(h.modelsDir, mmprojPath),
+			Role:      workerpb.ModelFileRole_MODEL_FILE_ROLE_MMPROJ,
 		})
 	}
 	return hints, files, nil
@@ -819,12 +913,3 @@ func writeSSE(w io.Writer, body string) {
 	_, _ = io.WriteString(w, "data: "+body+"\n\n")
 }
 
-func mustEncodeHints(h *llamacpp.LoadHints) []byte {
-	b, err := payload.EncodeLoadHints(h)
-	if err != nil {
-		// Encoding only fails on programmer error (e.g. malformed proto
-		// message constructed in code); panic so it surfaces in test.
-		panic(fmt.Errorf("encoding load hints: %w", err))
-	}
-	return b
-}
