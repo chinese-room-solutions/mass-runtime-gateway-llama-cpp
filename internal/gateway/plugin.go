@@ -25,11 +25,14 @@ var Handshake = plugin.HandshakeConfig{
 // constant in mass/internal/runtimes.PluginName.
 const PluginName = "runtime_gateway"
 
-// PluginParams configures a Plugin instance.
+// PluginParams configures a Plugin instance. RuntimeName, Version,
+// DisplayName, and Description come from runtime.yml — see main.go for
+// where they're loaded.
 type PluginParams struct {
 	RuntimeName string
 	Version     string
 	DisplayName string
+	Description string
 	Logger      zerolog.Logger
 }
 

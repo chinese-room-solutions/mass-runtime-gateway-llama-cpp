@@ -1,4 +1,4 @@
-// mass-runtime-llama-cpp is a hashicorp/go-plugin subprocess MASS launches
+// mass-runtime-gateway-llama-cpp is a hashicorp/go-plugin subprocess MASS launches
 // to terminate inference traffic for the llama-cpp runtime kind.
 //
 // Lifecycle:
@@ -19,27 +19,29 @@ import (
 	"os"
 
 	"github.com/KernelPryanic/golog"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/gateway"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/gateway"
+	sdkmanifest "github.com/chinese-room-solutions/mass-sdk/manifest"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 )
 
-// version is set at build time via -ldflags "-X main.version=...".
-var version = "dev"
-
-// runtimeName is the stable identifier for this gateway. Must match
-// runtime.yml and the URL prefix MASS uses (`/mass.llama-cpp.*`).
-const runtimeName = "llama-cpp"
-
-// displayName is used by MASS's Runtimes tab when InitResponse.display_name
-// is empty.
-const displayName = "llama.cpp"
-
 func main() {
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	// runtime.yml is the single source of truth for runtime_name, version,
+	// display name, and description. MASS extracts the .mass package to
+	// <runtimesDir>/<runtimeName>/, with runtime.yml at the root and our
+	// binary in bin/. The SDK helper finds runtime.yml relative to our own
+	// executable so we don't need MASS to pass it via env or flags.
+	mf, err := sdkmanifest.LoadAdjacentToBinary()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mass-runtime-gateway-llama-cpp: failed to load runtime.yml:", err)
+		os.Exit(1)
+	}
+
 	if *showVersion {
-		fmt.Println("mass-runtime-llama-cpp", version)
+		fmt.Println("mass-runtime-gateway-llama-cpp", mf.Version)
 		return
 	}
 
@@ -47,15 +49,16 @@ func main() {
 	// and routes it back to MASS's logger via the hclog adapter MASS
 	// installed when launching us.
 	logger := golog.New(false, io.MultiWriter(os.Stderr))
-	zerolog.SetGlobalLevel(zerolog.DebugLevel) // overridden by Init.LogLevel
+	zerolog.SetGlobalLevel(zerolog.InfoLevel) // overridden by Init.LogLevel
 
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: gateway.Handshake,
 		Plugins: map[string]plugin.Plugin{
 			gateway.PluginName: gateway.NewPlugin(gateway.PluginParams{
-				RuntimeName: runtimeName,
-				Version:     version,
-				DisplayName: displayName,
+				RuntimeName: mf.RuntimeName,
+				Version:     mf.Version,
+				DisplayName: mf.DisplayName,
+				Description: mf.Description,
 				Logger:      logger,
 			}),
 		},

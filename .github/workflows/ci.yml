@@ -1,0 +1,66 @@
+name: ci
+
+# Pure-Go runtime gateway (CGO_ENABLED=0). Build/test/lint on push/PR.
+# Depends on private mass-sdk / mass-proto modules, fetched via GH_PAT.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOPRIVATE: github.com/chinese-room-solutions/*
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - name: Build
+        run: make build
+      - name: Test
+        run: make test
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      # Build golangci-lint from source with this repo's Go (via `make lint`)
+      # rather than golangci-lint-action's prebuilt binary — the prebuilt one is
+      # compiled with an older Go and refuses to analyze a newer-Go module.
+      - name: Lint
+        run: make lint
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Configure private module access
+        run: git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      # Reuse the warm setup-go cache instead of golang/govulncheck-action
+      # (which installs its own Go and recompiles the dependency tree cold).
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

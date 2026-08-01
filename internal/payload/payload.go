@@ -67,23 +67,3 @@ func DecodeLoadHints(b []byte) (*llamacpp.LoadHints, error) {
 	}
 	return &h, nil
 }
-
-// EncodeLoadedMetadata serialises post-load metadata for
-// WorkerLoadModelResult.runtime_metadata. Worker-side helper, included here
-// so encode/decode live together.
-func EncodeLoadedMetadata(m *llamacpp.LoadedModelMetadata) ([]byte, error) {
-	b, err := proto.Marshal(m)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling loaded metadata: %w", err)
-	}
-	return b, nil
-}
-
-// DecodeLoadedMetadata deserialises post-load metadata. Gateway-side.
-func DecodeLoadedMetadata(b []byte) (*llamacpp.LoadedModelMetadata, error) {
-	var m llamacpp.LoadedModelMetadata
-	if err := proto.Unmarshal(b, &m); err != nil {
-		return nil, fmt.Errorf("unmarshalling loaded metadata: %w", err)
-	}
-	return &m, nil
-}

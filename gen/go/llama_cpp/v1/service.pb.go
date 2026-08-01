@@ -21,6 +21,62 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// JobStatus mirrors the lifecycle of a submitted job.
+type JobStatus int32
+
+const (
+	JobStatus_JOB_STATUS_UNSPECIFIED JobStatus = 0
+	JobStatus_JOB_STATUS_PENDING     JobStatus = 1 // queued, not yet running
+	JobStatus_JOB_STATUS_PROCESSING  JobStatus = 2 // running on a worker
+	JobStatus_JOB_STATUS_DONE        JobStatus = 3 // finished; the matching result field is set
+	JobStatus_JOB_STATUS_ERROR       JobStatus = 4 // failed; error is set
+)
+
+// Enum value maps for JobStatus.
+var (
+	JobStatus_name = map[int32]string{
+		0: "JOB_STATUS_UNSPECIFIED",
+		1: "JOB_STATUS_PENDING",
+		2: "JOB_STATUS_PROCESSING",
+		3: "JOB_STATUS_DONE",
+		4: "JOB_STATUS_ERROR",
+	}
+	JobStatus_value = map[string]int32{
+		"JOB_STATUS_UNSPECIFIED": 0,
+		"JOB_STATUS_PENDING":     1,
+		"JOB_STATUS_PROCESSING":  2,
+		"JOB_STATUS_DONE":        3,
+		"JOB_STATUS_ERROR":       4,
+	}
+)
+
+func (x JobStatus) Enum() *JobStatus {
+	p := new(JobStatus)
+	*p = x
+	return p
+}
+
+func (x JobStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (JobStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_llama_cpp_v1_service_proto_enumTypes[0].Descriptor()
+}
+
+func (JobStatus) Type() protoreflect.EnumType {
+	return &file_llama_cpp_v1_service_proto_enumTypes[0]
+}
+
+func (x JobStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use JobStatus.Descriptor instead.
+func (JobStatus) EnumDescriptor() ([]byte, []int) {
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{0}
+}
+
 // Role is the speaker for a chat message.
 type Role int32
 
@@ -61,11 +117,11 @@ func (x Role) String() string {
 }
 
 func (Role) Descriptor() protoreflect.EnumDescriptor {
-	return file_llama_cpp_v1_service_proto_enumTypes[0].Descriptor()
+	return file_llama_cpp_v1_service_proto_enumTypes[1].Descriptor()
 }
 
 func (Role) Type() protoreflect.EnumType {
-	return &file_llama_cpp_v1_service_proto_enumTypes[0]
+	return &file_llama_cpp_v1_service_proto_enumTypes[1]
 }
 
 func (x Role) Number() protoreflect.EnumNumber {
@@ -74,7 +130,7 @@ func (x Role) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Role.Descriptor instead.
 func (Role) EnumDescriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{0}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{1}
 }
 
 // FinishReason is why generation stopped.
@@ -117,11 +173,11 @@ func (x FinishReason) String() string {
 }
 
 func (FinishReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_llama_cpp_v1_service_proto_enumTypes[1].Descriptor()
+	return file_llama_cpp_v1_service_proto_enumTypes[2].Descriptor()
 }
 
 func (FinishReason) Type() protoreflect.EnumType {
-	return &file_llama_cpp_v1_service_proto_enumTypes[1]
+	return &file_llama_cpp_v1_service_proto_enumTypes[2]
 }
 
 func (x FinishReason) Number() protoreflect.EnumNumber {
@@ -130,7 +186,7 @@ func (x FinishReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use FinishReason.Descriptor instead.
 func (FinishReason) EnumDescriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{1}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{2}
 }
 
 // CacheType is the KV-cache quantization. Lower bits = less VRAM, slight
@@ -171,11 +227,11 @@ func (x CacheType) String() string {
 }
 
 func (CacheType) Descriptor() protoreflect.EnumDescriptor {
-	return file_llama_cpp_v1_service_proto_enumTypes[2].Descriptor()
+	return file_llama_cpp_v1_service_proto_enumTypes[3].Descriptor()
 }
 
 func (CacheType) Type() protoreflect.EnumType {
-	return &file_llama_cpp_v1_service_proto_enumTypes[2]
+	return &file_llama_cpp_v1_service_proto_enumTypes[3]
 }
 
 func (x CacheType) Number() protoreflect.EnumNumber {
@@ -184,57 +240,335 @@ func (x CacheType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CacheType.Descriptor instead.
 func (CacheType) EnumDescriptor() ([]byte, []int) {
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{3}
+}
+
+// SubmitResponse is the reply to every Submit*: just the durable job id. Read
+// the result via GetResult(job_id).
+type SubmitResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitResponse) Reset() {
+	*x = SubmitResponse{}
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitResponse) ProtoMessage() {}
+
+func (x *SubmitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitResponse.ProtoReflect.Descriptor instead.
+func (*SubmitResponse) Descriptor() ([]byte, []int) {
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *SubmitResponse) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+type GetResultRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Wait          bool                   `protobuf:"varint,2,opt,name=wait,proto3" json:"wait,omitempty"` // true: block until terminal; false: return current status
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetResultRequest) Reset() {
+	*x = GetResultRequest{}
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetResultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetResultRequest) ProtoMessage() {}
+
+func (x *GetResultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetResultRequest.ProtoReflect.Descriptor instead.
+func (*GetResultRequest) Descriptor() ([]byte, []int) {
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GetResultRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *GetResultRequest) GetWait() bool {
+	if x != nil {
+		return x.Wait
+	}
+	return false
+}
+
+type CancelJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobRequest) Reset() {
+	*x = CancelJobRequest{}
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobRequest) ProtoMessage() {}
+
+func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
+func (*CancelJobRequest) Descriptor() ([]byte, []int) {
 	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{2}
 }
 
-type LoadKind int32
-
-const (
-	LoadKind_LOAD_KIND_UNSPECIFIED LoadKind = 0
-	LoadKind_LOAD_KIND_CHAT        LoadKind = 1
-	LoadKind_LOAD_KIND_EMBEDDING   LoadKind = 2
-)
-
-// Enum value maps for LoadKind.
-var (
-	LoadKind_name = map[int32]string{
-		0: "LOAD_KIND_UNSPECIFIED",
-		1: "LOAD_KIND_CHAT",
-		2: "LOAD_KIND_EMBEDDING",
+func (x *CancelJobRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
 	}
-	LoadKind_value = map[string]int32{
-		"LOAD_KIND_UNSPECIFIED": 0,
-		"LOAD_KIND_CHAT":        1,
-		"LOAD_KIND_EMBEDDING":   2,
+	return ""
+}
+
+type CancelJobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobResponse) Reset() {
+	*x = CancelJobResponse{}
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobResponse) ProtoMessage() {}
+
+func (x *CancelJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
 	}
-)
-
-func (x LoadKind) Enum() *LoadKind {
-	p := new(LoadKind)
-	*p = x
-	return p
+	return mi.MessageOf(x)
 }
 
-func (x LoadKind) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (LoadKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_llama_cpp_v1_service_proto_enumTypes[3].Descriptor()
-}
-
-func (LoadKind) Type() protoreflect.EnumType {
-	return &file_llama_cpp_v1_service_proto_enumTypes[3]
-}
-
-func (x LoadKind) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use LoadKind.Descriptor instead.
-func (LoadKind) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use CancelJobResponse.ProtoReflect.Descriptor instead.
+func (*CancelJobResponse) Descriptor() ([]byte, []int) {
 	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{3}
 }
+
+// JobResult is the self-describing result of any submitted job. status tells
+// the caller which result field (if any) is set; error carries the reason on
+// JOB_STATUS_ERROR.
+type JobResult struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Status JobStatus              `protobuf:"varint,1,opt,name=status,proto3,enum=llama_cpp.v1.JobStatus" json:"status,omitempty"`
+	Error  string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// Types that are valid to be assigned to Result:
+	//
+	//	*JobResult_Chat
+	//	*JobResult_BatchChat
+	//	*JobResult_Embed
+	//	*JobResult_BatchEmbed
+	//	*JobResult_Tokenize
+	Result        isJobResult_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JobResult) Reset() {
+	*x = JobResult{}
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JobResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JobResult) ProtoMessage() {}
+
+func (x *JobResult) ProtoReflect() protoreflect.Message {
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JobResult.ProtoReflect.Descriptor instead.
+func (*JobResult) Descriptor() ([]byte, []int) {
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *JobResult) GetStatus() JobStatus {
+	if x != nil {
+		return x.Status
+	}
+	return JobStatus_JOB_STATUS_UNSPECIFIED
+}
+
+func (x *JobResult) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *JobResult) GetResult() isJobResult_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *JobResult) GetChat() *ChatResponse {
+	if x != nil {
+		if x, ok := x.Result.(*JobResult_Chat); ok {
+			return x.Chat
+		}
+	}
+	return nil
+}
+
+func (x *JobResult) GetBatchChat() *BatchChatResponse {
+	if x != nil {
+		if x, ok := x.Result.(*JobResult_BatchChat); ok {
+			return x.BatchChat
+		}
+	}
+	return nil
+}
+
+func (x *JobResult) GetEmbed() *EmbedResponse {
+	if x != nil {
+		if x, ok := x.Result.(*JobResult_Embed); ok {
+			return x.Embed
+		}
+	}
+	return nil
+}
+
+func (x *JobResult) GetBatchEmbed() *BatchEmbedResponse {
+	if x != nil {
+		if x, ok := x.Result.(*JobResult_BatchEmbed); ok {
+			return x.BatchEmbed
+		}
+	}
+	return nil
+}
+
+func (x *JobResult) GetTokenize() *TokenizeResponse {
+	if x != nil {
+		if x, ok := x.Result.(*JobResult_Tokenize); ok {
+			return x.Tokenize
+		}
+	}
+	return nil
+}
+
+type isJobResult_Result interface {
+	isJobResult_Result()
+}
+
+type JobResult_Chat struct {
+	Chat *ChatResponse `protobuf:"bytes,3,opt,name=chat,proto3,oneof"`
+}
+
+type JobResult_BatchChat struct {
+	BatchChat *BatchChatResponse `protobuf:"bytes,4,opt,name=batch_chat,json=batchChat,proto3,oneof"`
+}
+
+type JobResult_Embed struct {
+	Embed *EmbedResponse `protobuf:"bytes,5,opt,name=embed,proto3,oneof"`
+}
+
+type JobResult_BatchEmbed struct {
+	BatchEmbed *BatchEmbedResponse `protobuf:"bytes,6,opt,name=batch_embed,json=batchEmbed,proto3,oneof"`
+}
+
+type JobResult_Tokenize struct {
+	Tokenize *TokenizeResponse `protobuf:"bytes,7,opt,name=tokenize,proto3,oneof"`
+}
+
+func (*JobResult_Chat) isJobResult_Result() {}
+
+func (*JobResult_BatchChat) isJobResult_Result() {}
+
+func (*JobResult_Embed) isJobResult_Result() {}
+
+func (*JobResult_BatchEmbed) isJobResult_Result() {}
+
+func (*JobResult_Tokenize) isJobResult_Result() {}
 
 // ContentPart is a single piece of a multimodal chat message. Text-only
 // requests can use Message.content directly; multimodal must use parts.
@@ -250,7 +584,7 @@ type ContentPart struct {
 
 func (x *ContentPart) Reset() {
 	*x = ContentPart{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[0]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -262,7 +596,7 @@ func (x *ContentPart) String() string {
 func (*ContentPart) ProtoMessage() {}
 
 func (x *ContentPart) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[0]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -275,7 +609,7 @@ func (x *ContentPart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContentPart.ProtoReflect.Descriptor instead.
 func (*ContentPart) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{0}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ContentPart) GetType() string {
@@ -317,7 +651,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[1]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -329,7 +663,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[1]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -342,7 +676,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{1}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Message) GetRole() Role {
@@ -366,18 +700,22 @@ func (x *Message) GetParts() []*ContentPart {
 	return nil
 }
 
+// Sampling: every numeric param is `optional` so presence is explicit.
+// ABSENT means "the client didn't say" and the worker applies its default;
+// PRESENT applies exactly as sent, including zero (temperature=0 → greedy,
+// seed=0 → deterministic seed 0).
 type Sampling struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	MaxTokens        *int32                 `protobuf:"varint,1,opt,name=max_tokens,json=maxTokens,proto3,oneof" json:"max_tokens,omitempty"`
-	Temperature      float32                `protobuf:"fixed32,2,opt,name=temperature,proto3" json:"temperature,omitempty"`
-	TopP             float32                `protobuf:"fixed32,3,opt,name=top_p,json=topP,proto3" json:"top_p,omitempty"`
-	TopK             int32                  `protobuf:"varint,4,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
+	Temperature      *float32               `protobuf:"fixed32,2,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
+	TopP             *float32               `protobuf:"fixed32,3,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
+	TopK             *int32                 `protobuf:"varint,4,opt,name=top_k,json=topK,proto3,oneof" json:"top_k,omitempty"`
 	Seed             *int32                 `protobuf:"varint,5,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
 	Stop             []string               `protobuf:"bytes,6,rep,name=stop,proto3" json:"stop,omitempty"`
-	MinP             float32                `protobuf:"fixed32,7,opt,name=min_p,json=minP,proto3" json:"min_p,omitempty"`
-	RepeatPenalty    float32                `protobuf:"fixed32,8,opt,name=repeat_penalty,json=repeatPenalty,proto3" json:"repeat_penalty,omitempty"`
-	FrequencyPenalty float32                `protobuf:"fixed32,9,opt,name=frequency_penalty,json=frequencyPenalty,proto3" json:"frequency_penalty,omitempty"`
-	PresencePenalty  float32                `protobuf:"fixed32,10,opt,name=presence_penalty,json=presencePenalty,proto3" json:"presence_penalty,omitempty"`
+	MinP             *float32               `protobuf:"fixed32,7,opt,name=min_p,json=minP,proto3,oneof" json:"min_p,omitempty"`
+	RepeatPenalty    *float32               `protobuf:"fixed32,8,opt,name=repeat_penalty,json=repeatPenalty,proto3,oneof" json:"repeat_penalty,omitempty"`
+	FrequencyPenalty *float32               `protobuf:"fixed32,9,opt,name=frequency_penalty,json=frequencyPenalty,proto3,oneof" json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float32               `protobuf:"fixed32,10,opt,name=presence_penalty,json=presencePenalty,proto3,oneof" json:"presence_penalty,omitempty"`
 	EnableThinking   bool                   `protobuf:"varint,11,opt,name=enable_thinking,json=enableThinking,proto3" json:"enable_thinking,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -385,7 +723,7 @@ type Sampling struct {
 
 func (x *Sampling) Reset() {
 	*x = Sampling{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[2]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -397,7 +735,7 @@ func (x *Sampling) String() string {
 func (*Sampling) ProtoMessage() {}
 
 func (x *Sampling) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[2]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -410,7 +748,7 @@ func (x *Sampling) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Sampling.ProtoReflect.Descriptor instead.
 func (*Sampling) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{2}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Sampling) GetMaxTokens() int32 {
@@ -421,22 +759,22 @@ func (x *Sampling) GetMaxTokens() int32 {
 }
 
 func (x *Sampling) GetTemperature() float32 {
-	if x != nil {
-		return x.Temperature
+	if x != nil && x.Temperature != nil {
+		return *x.Temperature
 	}
 	return 0
 }
 
 func (x *Sampling) GetTopP() float32 {
-	if x != nil {
-		return x.TopP
+	if x != nil && x.TopP != nil {
+		return *x.TopP
 	}
 	return 0
 }
 
 func (x *Sampling) GetTopK() int32 {
-	if x != nil {
-		return x.TopK
+	if x != nil && x.TopK != nil {
+		return *x.TopK
 	}
 	return 0
 }
@@ -456,29 +794,29 @@ func (x *Sampling) GetStop() []string {
 }
 
 func (x *Sampling) GetMinP() float32 {
-	if x != nil {
-		return x.MinP
+	if x != nil && x.MinP != nil {
+		return *x.MinP
 	}
 	return 0
 }
 
 func (x *Sampling) GetRepeatPenalty() float32 {
-	if x != nil {
-		return x.RepeatPenalty
+	if x != nil && x.RepeatPenalty != nil {
+		return *x.RepeatPenalty
 	}
 	return 0
 }
 
 func (x *Sampling) GetFrequencyPenalty() float32 {
-	if x != nil {
-		return x.FrequencyPenalty
+	if x != nil && x.FrequencyPenalty != nil {
+		return *x.FrequencyPenalty
 	}
 	return 0
 }
 
 func (x *Sampling) GetPresencePenalty() float32 {
-	if x != nil {
-		return x.PresencePenalty
+	if x != nil && x.PresencePenalty != nil {
+		return *x.PresencePenalty
 	}
 	return 0
 }
@@ -502,18 +840,20 @@ type ConfigOverride struct {
 	Threads        *int32                 `protobuf:"varint,5,opt,name=threads,proto3,oneof" json:"threads,omitempty"`
 	MaxConcurrent  *int32                 `protobuf:"varint,6,opt,name=max_concurrent,json=maxConcurrent,proto3,oneof" json:"max_concurrent,omitempty"`
 	Thinking       bool                   `protobuf:"varint,7,opt,name=thinking,proto3" json:"thinking,omitempty"`
-	MainGpu        string                 `protobuf:"bytes,8,opt,name=main_gpu,json=mainGpu,proto3" json:"main_gpu,omitempty"`
-	TensorSplit    []float32              `protobuf:"fixed32,9,rep,packed,name=tensor_split,json=tensorSplit,proto3" json:"tensor_split,omitempty"`
 	MmprojFilename string                 `protobuf:"bytes,10,opt,name=mmproj_filename,json=mmprojFilename,proto3" json:"mmproj_filename,omitempty"` // basename only; lives in the same dir as model
 	ChatTemplate   string                 `protobuf:"bytes,11,opt,name=chat_template,json=chatTemplate,proto3" json:"chat_template,omitempty"`
 	CacheType      CacheType              `protobuf:"varint,12,opt,name=cache_type,json=cacheType,proto3,enum=llama_cpp.v1.CacheType" json:"cache_type,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// VRAM headroom watermark (1-100). Forwarded to the worker as the
+	// grow-loop stop threshold; unset → worker uses its --vram-headroom-pct
+	// default.
+	VramHeadroomPct *int32 `protobuf:"varint,13,opt,name=vram_headroom_pct,json=vramHeadroomPct,proto3,oneof" json:"vram_headroom_pct,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ConfigOverride) Reset() {
 	*x = ConfigOverride{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[3]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -525,7 +865,7 @@ func (x *ConfigOverride) String() string {
 func (*ConfigOverride) ProtoMessage() {}
 
 func (x *ConfigOverride) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[3]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -538,7 +878,7 @@ func (x *ConfigOverride) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigOverride.ProtoReflect.Descriptor instead.
 func (*ConfigOverride) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{3}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ConfigOverride) GetContextSize() int32 {
@@ -590,20 +930,6 @@ func (x *ConfigOverride) GetThinking() bool {
 	return false
 }
 
-func (x *ConfigOverride) GetMainGpu() string {
-	if x != nil {
-		return x.MainGpu
-	}
-	return ""
-}
-
-func (x *ConfigOverride) GetTensorSplit() []float32 {
-	if x != nil {
-		return x.TensorSplit
-	}
-	return nil
-}
-
 func (x *ConfigOverride) GetMmprojFilename() string {
 	if x != nil {
 		return x.MmprojFilename
@@ -625,6 +951,13 @@ func (x *ConfigOverride) GetCacheType() CacheType {
 	return CacheType_CACHE_TYPE_UNSPECIFIED
 }
 
+func (x *ConfigOverride) GetVramHeadroomPct() int32 {
+	if x != nil && x.VramHeadroomPct != nil {
+		return *x.VramHeadroomPct
+	}
+	return 0
+}
+
 type Usage struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	PromptTokens     int32                  `protobuf:"varint,1,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
@@ -636,7 +969,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[4]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -648,7 +981,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[4]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -661,7 +994,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{4}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Usage) GetPromptTokens() int32 {
@@ -697,7 +1030,7 @@ type ChatRequest struct {
 
 func (x *ChatRequest) Reset() {
 	*x = ChatRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[5]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -709,7 +1042,7 @@ func (x *ChatRequest) String() string {
 func (*ChatRequest) ProtoMessage() {}
 
 func (x *ChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[5]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -722,7 +1055,7 @@ func (x *ChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatRequest.ProtoReflect.Descriptor instead.
 func (*ChatRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{5}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ChatRequest) GetModel() string {
@@ -768,7 +1101,7 @@ type ChatResponse struct {
 
 func (x *ChatResponse) Reset() {
 	*x = ChatResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[6]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -780,7 +1113,7 @@ func (x *ChatResponse) String() string {
 func (*ChatResponse) ProtoMessage() {}
 
 func (x *ChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[6]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -793,7 +1126,7 @@ func (x *ChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatResponse.ProtoReflect.Descriptor instead.
 func (*ChatResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{6}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ChatResponse) GetId() string {
@@ -866,7 +1199,7 @@ type ChatChunk struct {
 
 func (x *ChatChunk) Reset() {
 	*x = ChatChunk{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[7]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -878,7 +1211,7 @@ func (x *ChatChunk) String() string {
 func (*ChatChunk) ProtoMessage() {}
 
 func (x *ChatChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[7]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -891,7 +1224,7 @@ func (x *ChatChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatChunk.ProtoReflect.Descriptor instead.
 func (*ChatChunk) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{7}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ChatChunk) GetId() string {
@@ -954,7 +1287,7 @@ type BatchChatRequest struct {
 
 func (x *BatchChatRequest) Reset() {
 	*x = BatchChatRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[8]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -966,7 +1299,7 @@ func (x *BatchChatRequest) String() string {
 func (*BatchChatRequest) ProtoMessage() {}
 
 func (x *BatchChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[8]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -979,7 +1312,7 @@ func (x *BatchChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchChatRequest.ProtoReflect.Descriptor instead.
 func (*BatchChatRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{8}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *BatchChatRequest) GetModel() string {
@@ -1013,7 +1346,7 @@ type BatchChatItem struct {
 
 func (x *BatchChatItem) Reset() {
 	*x = BatchChatItem{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[9]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1025,7 +1358,7 @@ func (x *BatchChatItem) String() string {
 func (*BatchChatItem) ProtoMessage() {}
 
 func (x *BatchChatItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[9]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1038,7 +1371,7 @@ func (x *BatchChatItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchChatItem.ProtoReflect.Descriptor instead.
 func (*BatchChatItem) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{9}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *BatchChatItem) GetMessages() []*Message {
@@ -1064,7 +1397,7 @@ type BatchChatResponse struct {
 
 func (x *BatchChatResponse) Reset() {
 	*x = BatchChatResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[10]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1076,7 +1409,7 @@ func (x *BatchChatResponse) String() string {
 func (*BatchChatResponse) ProtoMessage() {}
 
 func (x *BatchChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[10]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1089,7 +1422,7 @@ func (x *BatchChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchChatResponse.ProtoReflect.Descriptor instead.
 func (*BatchChatResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{10}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *BatchChatResponse) GetResponses() []*ChatResponse {
@@ -1110,7 +1443,7 @@ type EmbedRequest struct {
 
 func (x *EmbedRequest) Reset() {
 	*x = EmbedRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[11]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1122,7 +1455,7 @@ func (x *EmbedRequest) String() string {
 func (*EmbedRequest) ProtoMessage() {}
 
 func (x *EmbedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[11]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1135,7 +1468,7 @@ func (x *EmbedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbedRequest.ProtoReflect.Descriptor instead.
 func (*EmbedRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{11}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EmbedRequest) GetModel() string {
@@ -1170,7 +1503,7 @@ type EmbedResponse struct {
 
 func (x *EmbedResponse) Reset() {
 	*x = EmbedResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[12]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1182,7 +1515,7 @@ func (x *EmbedResponse) String() string {
 func (*EmbedResponse) ProtoMessage() {}
 
 func (x *EmbedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[12]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1195,7 +1528,7 @@ func (x *EmbedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbedResponse.ProtoReflect.Descriptor instead.
 func (*EmbedResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{12}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *EmbedResponse) GetId() string {
@@ -1230,7 +1563,7 @@ type BatchEmbedRequest struct {
 
 func (x *BatchEmbedRequest) Reset() {
 	*x = BatchEmbedRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[13]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1242,7 +1575,7 @@ func (x *BatchEmbedRequest) String() string {
 func (*BatchEmbedRequest) ProtoMessage() {}
 
 func (x *BatchEmbedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[13]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1255,7 +1588,7 @@ func (x *BatchEmbedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEmbedRequest.ProtoReflect.Descriptor instead.
 func (*BatchEmbedRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{13}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *BatchEmbedRequest) GetModel() string {
@@ -1290,7 +1623,7 @@ type BatchEmbedResponse struct {
 
 func (x *BatchEmbedResponse) Reset() {
 	*x = BatchEmbedResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[14]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1302,7 +1635,7 @@ func (x *BatchEmbedResponse) String() string {
 func (*BatchEmbedResponse) ProtoMessage() {}
 
 func (x *BatchEmbedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[14]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1315,7 +1648,7 @@ func (x *BatchEmbedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEmbedResponse.ProtoReflect.Descriptor instead.
 func (*BatchEmbedResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{14}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *BatchEmbedResponse) GetId() string {
@@ -1349,7 +1682,7 @@ type EmbeddingItem struct {
 
 func (x *EmbeddingItem) Reset() {
 	*x = EmbeddingItem{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[15]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1361,7 +1694,7 @@ func (x *EmbeddingItem) String() string {
 func (*EmbeddingItem) ProtoMessage() {}
 
 func (x *EmbeddingItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[15]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1374,7 +1707,7 @@ func (x *EmbeddingItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingItem.ProtoReflect.Descriptor instead.
 func (*EmbeddingItem) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{15}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *EmbeddingItem) GetIndex() int32 {
@@ -1402,7 +1735,7 @@ type TokenizeRequest struct {
 
 func (x *TokenizeRequest) Reset() {
 	*x = TokenizeRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[16]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1414,7 +1747,7 @@ func (x *TokenizeRequest) String() string {
 func (*TokenizeRequest) ProtoMessage() {}
 
 func (x *TokenizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[16]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1427,7 +1760,7 @@ func (x *TokenizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenizeRequest.ProtoReflect.Descriptor instead.
 func (*TokenizeRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{16}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *TokenizeRequest) GetModel() string {
@@ -1460,7 +1793,7 @@ type TokenizeResponse struct {
 
 func (x *TokenizeResponse) Reset() {
 	*x = TokenizeResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[17]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1472,7 +1805,7 @@ func (x *TokenizeResponse) String() string {
 func (*TokenizeResponse) ProtoMessage() {}
 
 func (x *TokenizeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[17]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1485,7 +1818,7 @@ func (x *TokenizeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenizeResponse.ProtoReflect.Descriptor instead.
 func (*TokenizeResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{17}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *TokenizeResponse) GetTokens() []int32 {
@@ -1493,126 +1826,6 @@ func (x *TokenizeResponse) GetTokens() []int32 {
 		return x.Tokens
 	}
 	return nil
-}
-
-type LoadModelRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Model         string                 `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`
-	ModelConfig   *ConfigOverride        `protobuf:"bytes,2,opt,name=model_config,json=modelConfig,proto3" json:"model_config,omitempty"`
-	Kind          LoadKind               `protobuf:"varint,3,opt,name=kind,proto3,enum=llama_cpp.v1.LoadKind" json:"kind,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *LoadModelRequest) Reset() {
-	*x = LoadModelRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[18]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *LoadModelRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LoadModelRequest) ProtoMessage() {}
-
-func (x *LoadModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[18]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LoadModelRequest.ProtoReflect.Descriptor instead.
-func (*LoadModelRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *LoadModelRequest) GetModel() string {
-	if x != nil {
-		return x.Model
-	}
-	return ""
-}
-
-func (x *LoadModelRequest) GetModelConfig() *ConfigOverride {
-	if x != nil {
-		return x.ModelConfig
-	}
-	return nil
-}
-
-func (x *LoadModelRequest) GetKind() LoadKind {
-	if x != nil {
-		return x.Kind
-	}
-	return LoadKind_LOAD_KIND_UNSPECIFIED
-}
-
-type LoadModelResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ModelId       string                 `protobuf:"bytes,1,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`     // gateway-internal model fingerprint
-	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`  // worker that loaded it
-	PoolSize      int32                  `protobuf:"varint,3,opt,name=pool_size,json=poolSize,proto3" json:"pool_size,omitempty"` // concurrent context capacity reported by worker
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *LoadModelResponse) Reset() {
-	*x = LoadModelResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[19]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *LoadModelResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LoadModelResponse) ProtoMessage() {}
-
-func (x *LoadModelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[19]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LoadModelResponse.ProtoReflect.Descriptor instead.
-func (*LoadModelResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *LoadModelResponse) GetModelId() string {
-	if x != nil {
-		return x.ModelId
-	}
-	return ""
-}
-
-func (x *LoadModelResponse) GetWorkerId() string {
-	if x != nil {
-		return x.WorkerId
-	}
-	return ""
-}
-
-func (x *LoadModelResponse) GetPoolSize() int32 {
-	if x != nil {
-		return x.PoolSize
-	}
-	return 0
 }
 
 type ListModelsRequest struct {
@@ -1623,7 +1836,7 @@ type ListModelsRequest struct {
 
 func (x *ListModelsRequest) Reset() {
 	*x = ListModelsRequest{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[20]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1635,7 +1848,7 @@ func (x *ListModelsRequest) String() string {
 func (*ListModelsRequest) ProtoMessage() {}
 
 func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[20]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1648,7 +1861,7 @@ func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListModelsRequest) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{20}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{23}
 }
 
 type ListModelsResponse struct {
@@ -1660,7 +1873,7 @@ type ListModelsResponse struct {
 
 func (x *ListModelsResponse) Reset() {
 	*x = ListModelsResponse{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[21]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1672,7 +1885,7 @@ func (x *ListModelsResponse) String() string {
 func (*ListModelsResponse) ProtoMessage() {}
 
 func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[21]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1685,7 +1898,7 @@ func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListModelsResponse) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{21}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListModelsResponse) GetModels() []*ModelEntry {
@@ -1708,7 +1921,7 @@ type ModelEntry struct {
 
 func (x *ModelEntry) Reset() {
 	*x = ModelEntry{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[22]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1720,7 +1933,7 @@ func (x *ModelEntry) String() string {
 func (*ModelEntry) ProtoMessage() {}
 
 func (x *ModelEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[22]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1733,7 +1946,7 @@ func (x *ModelEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelEntry.ProtoReflect.Descriptor instead.
 func (*ModelEntry) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{22}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ModelEntry) GetId() string {
@@ -1786,7 +1999,7 @@ type ModelCapabilities struct {
 
 func (x *ModelCapabilities) Reset() {
 	*x = ModelCapabilities{}
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[23]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1798,7 +2011,7 @@ func (x *ModelCapabilities) String() string {
 func (*ModelCapabilities) ProtoMessage() {}
 
 func (x *ModelCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_llama_cpp_v1_service_proto_msgTypes[23]
+	mi := &file_llama_cpp_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1811,7 +2024,7 @@ func (x *ModelCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelCapabilities.ProtoReflect.Descriptor instead.
 func (*ModelCapabilities) Descriptor() ([]byte, []int) {
-	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{23}
+	return file_llama_cpp_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ModelCapabilities) GetVision() bool {
@@ -1839,7 +2052,26 @@ var File_llama_cpp_v1_service_proto protoreflect.FileDescriptor
 
 const file_llama_cpp_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1allama_cpp/v1/service.proto\x12\fllama_cpp.v1\"f\n" +
+	"\x1allama_cpp/v1/service.proto\x12\fllama_cpp.v1\"'\n" +
+	"\x0eSubmitResponse\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"=\n" +
+	"\x10GetResultRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x12\n" +
+	"\x04wait\x18\x02 \x01(\bR\x04wait\")\n" +
+	"\x10CancelJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\x13\n" +
+	"\x11CancelJobResponse\"\x88\x03\n" +
+	"\tJobResult\x12/\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x17.llama_cpp.v1.JobStatusR\x06status\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\x120\n" +
+	"\x04chat\x18\x03 \x01(\v2\x1a.llama_cpp.v1.ChatResponseH\x00R\x04chat\x12@\n" +
+	"\n" +
+	"batch_chat\x18\x04 \x01(\v2\x1f.llama_cpp.v1.BatchChatResponseH\x00R\tbatchChat\x123\n" +
+	"\x05embed\x18\x05 \x01(\v2\x1b.llama_cpp.v1.EmbedResponseH\x00R\x05embed\x12C\n" +
+	"\vbatch_embed\x18\x06 \x01(\v2 .llama_cpp.v1.BatchEmbedResponseH\x00R\n" +
+	"batchEmbed\x12<\n" +
+	"\btokenize\x18\a \x01(\v2\x1e.llama_cpp.v1.TokenizeResponseH\x00R\btokenizeB\b\n" +
+	"\x06result\"f\n" +
 	"\vContentPart\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x12\n" +
@@ -1848,23 +2080,30 @@ const file_llama_cpp_v1_service_proto_rawDesc = "" +
 	"\aMessage\x12&\n" +
 	"\x04role\x18\x01 \x01(\x0e2\x12.llama_cpp.v1.RoleR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x12/\n" +
-	"\x05parts\x18\x03 \x03(\v2\x19.llama_cpp.v1.ContentPartR\x05parts\"\xfc\x02\n" +
+	"\x05parts\x18\x03 \x03(\v2\x19.llama_cpp.v1.ContentPartR\x05parts\"\x8b\x04\n" +
 	"\bSampling\x12\"\n" +
 	"\n" +
-	"max_tokens\x18\x01 \x01(\x05H\x00R\tmaxTokens\x88\x01\x01\x12 \n" +
-	"\vtemperature\x18\x02 \x01(\x02R\vtemperature\x12\x13\n" +
-	"\x05top_p\x18\x03 \x01(\x02R\x04topP\x12\x13\n" +
-	"\x05top_k\x18\x04 \x01(\x05R\x04topK\x12\x17\n" +
-	"\x04seed\x18\x05 \x01(\x05H\x01R\x04seed\x88\x01\x01\x12\x12\n" +
-	"\x04stop\x18\x06 \x03(\tR\x04stop\x12\x13\n" +
-	"\x05min_p\x18\a \x01(\x02R\x04minP\x12%\n" +
-	"\x0erepeat_penalty\x18\b \x01(\x02R\rrepeatPenalty\x12+\n" +
-	"\x11frequency_penalty\x18\t \x01(\x02R\x10frequencyPenalty\x12)\n" +
+	"max_tokens\x18\x01 \x01(\x05H\x00R\tmaxTokens\x88\x01\x01\x12%\n" +
+	"\vtemperature\x18\x02 \x01(\x02H\x01R\vtemperature\x88\x01\x01\x12\x18\n" +
+	"\x05top_p\x18\x03 \x01(\x02H\x02R\x04topP\x88\x01\x01\x12\x18\n" +
+	"\x05top_k\x18\x04 \x01(\x05H\x03R\x04topK\x88\x01\x01\x12\x17\n" +
+	"\x04seed\x18\x05 \x01(\x05H\x04R\x04seed\x88\x01\x01\x12\x12\n" +
+	"\x04stop\x18\x06 \x03(\tR\x04stop\x12\x18\n" +
+	"\x05min_p\x18\a \x01(\x02H\x05R\x04minP\x88\x01\x01\x12*\n" +
+	"\x0erepeat_penalty\x18\b \x01(\x02H\x06R\rrepeatPenalty\x88\x01\x01\x120\n" +
+	"\x11frequency_penalty\x18\t \x01(\x02H\aR\x10frequencyPenalty\x88\x01\x01\x12.\n" +
 	"\x10presence_penalty\x18\n" +
-	" \x01(\x02R\x0fpresencePenalty\x12'\n" +
+	" \x01(\x02H\bR\x0fpresencePenalty\x88\x01\x01\x12'\n" +
 	"\x0fenable_thinking\x18\v \x01(\bR\x0eenableThinkingB\r\n" +
-	"\v_max_tokensB\a\n" +
-	"\x05_seed\"\x96\x04\n" +
+	"\v_max_tokensB\x0e\n" +
+	"\f_temperatureB\b\n" +
+	"\x06_top_pB\b\n" +
+	"\x06_top_kB\a\n" +
+	"\x05_seedB\b\n" +
+	"\x06_min_pB\x11\n" +
+	"\x0f_repeat_penaltyB\x14\n" +
+	"\x12_frequency_penaltyB\x13\n" +
+	"\x11_presence_penalty\"\xc3\x04\n" +
 	"\x0eConfigOverride\x12!\n" +
 	"\fcontext_size\x18\x01 \x01(\x05R\vcontextSize\x12\"\n" +
 	"\n" +
@@ -1875,20 +2114,21 @@ const file_llama_cpp_v1_service_proto_rawDesc = "" +
 	"flash_attn\x18\x04 \x01(\bH\x02R\tflashAttn\x88\x01\x01\x12\x1d\n" +
 	"\athreads\x18\x05 \x01(\x05H\x03R\athreads\x88\x01\x01\x12*\n" +
 	"\x0emax_concurrent\x18\x06 \x01(\x05H\x04R\rmaxConcurrent\x88\x01\x01\x12\x1a\n" +
-	"\bthinking\x18\a \x01(\bR\bthinking\x12\x19\n" +
-	"\bmain_gpu\x18\b \x01(\tR\amainGpu\x12!\n" +
-	"\ftensor_split\x18\t \x03(\x02R\vtensorSplit\x12'\n" +
+	"\bthinking\x18\a \x01(\bR\bthinking\x12'\n" +
 	"\x0fmmproj_filename\x18\n" +
 	" \x01(\tR\x0emmprojFilename\x12#\n" +
 	"\rchat_template\x18\v \x01(\tR\fchatTemplate\x126\n" +
 	"\n" +
-	"cache_type\x18\f \x01(\x0e2\x17.llama_cpp.v1.CacheTypeR\tcacheTypeB\r\n" +
+	"cache_type\x18\f \x01(\x0e2\x17.llama_cpp.v1.CacheTypeR\tcacheType\x12/\n" +
+	"\x11vram_headroom_pct\x18\r \x01(\x05H\x05R\x0fvramHeadroomPct\x88\x01\x01B\r\n" +
 	"\v_batch_sizeB\r\n" +
 	"\v_gpu_layersB\r\n" +
 	"\v_flash_attnB\n" +
 	"\n" +
 	"\b_threadsB\x11\n" +
-	"\x0f_max_concurrent\"|\n" +
+	"\x0f_max_concurrentB\x14\n" +
+	"\x12_vram_headroom_pctJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"R\bmain_gpuR\ftensor_split\"|\n" +
 	"\x05Usage\x12#\n" +
 	"\rprompt_tokens\x18\x01 \x01(\x05R\fpromptTokens\x12+\n" +
 	"\x11completion_tokens\x18\x02 \x01(\x05R\x10completionTokens\x12!\n" +
@@ -1949,15 +2189,7 @@ const file_llama_cpp_v1_service_proto_rawDesc = "" +
 	"\fmodel_config\x18\x02 \x01(\v2\x1c.llama_cpp.v1.ConfigOverrideR\vmodelConfig\x12\x12\n" +
 	"\x04text\x18\x03 \x01(\tR\x04text\"*\n" +
 	"\x10TokenizeResponse\x12\x16\n" +
-	"\x06tokens\x18\x01 \x03(\x05R\x06tokens\"\x95\x01\n" +
-	"\x10LoadModelRequest\x12\x14\n" +
-	"\x05model\x18\x01 \x01(\tR\x05model\x12?\n" +
-	"\fmodel_config\x18\x02 \x01(\v2\x1c.llama_cpp.v1.ConfigOverrideR\vmodelConfig\x12*\n" +
-	"\x04kind\x18\x03 \x01(\x0e2\x16.llama_cpp.v1.LoadKindR\x04kind\"h\n" +
-	"\x11LoadModelResponse\x12\x19\n" +
-	"\bmodel_id\x18\x01 \x01(\tR\amodelId\x12\x1b\n" +
-	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x1b\n" +
-	"\tpool_size\x18\x03 \x01(\x05R\bpoolSize\"\x13\n" +
+	"\x06tokens\x18\x01 \x03(\x05R\x06tokens\"\x13\n" +
 	"\x11ListModelsRequest\"F\n" +
 	"\x12ListModelsResponse\x120\n" +
 	"\x06models\x18\x01 \x03(\v2\x18.llama_cpp.v1.ModelEntryR\x06models\"\xc3\x01\n" +
@@ -1973,7 +2205,13 @@ const file_llama_cpp_v1_service_proto_rawDesc = "" +
 	"\x11ModelCapabilities\x12\x16\n" +
 	"\x06vision\x18\x01 \x01(\bR\x06vision\x12\x14\n" +
 	"\x05audio\x18\x02 \x01(\bR\x05audio\x12\x1a\n" +
-	"\bthinking\x18\x03 \x01(\bR\bthinking*_\n" +
+	"\bthinking\x18\x03 \x01(\bR\bthinking*\x85\x01\n" +
+	"\tJobStatus\x12\x1a\n" +
+	"\x16JOB_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12JOB_STATUS_PENDING\x10\x01\x12\x19\n" +
+	"\x15JOB_STATUS_PROCESSING\x10\x02\x12\x13\n" +
+	"\x0fJOB_STATUS_DONE\x10\x03\x12\x14\n" +
+	"\x10JOB_STATUS_ERROR\x10\x04*_\n" +
 	"\x04Role\x12\x14\n" +
 	"\x10ROLE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vROLE_SYSTEM\x10\x01\x12\r\n" +
@@ -1990,23 +2228,20 @@ const file_llama_cpp_v1_service_proto_rawDesc = "" +
 	"\x16CACHE_TYPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eCACHE_TYPE_F16\x10\x01\x12\x13\n" +
 	"\x0fCACHE_TYPE_Q8_0\x10\x02\x12\x13\n" +
-	"\x0fCACHE_TYPE_Q4_0\x10\x03*R\n" +
-	"\bLoadKind\x12\x19\n" +
-	"\x15LOAD_KIND_UNSPECIFIED\x10\x00\x12\x12\n" +
-	"\x0eLOAD_KIND_CHAT\x10\x01\x12\x17\n" +
-	"\x13LOAD_KIND_EMBEDDING\x10\x022\xdf\x04\n" +
-	"\x0fLlamaCppService\x12=\n" +
-	"\x04Chat\x12\x19.llama_cpp.v1.ChatRequest\x1a\x1a.llama_cpp.v1.ChatResponse\x12B\n" +
+	"\x0fCACHE_TYPE_Q4_0\x10\x032\xbd\x05\n" +
+	"\x0fLlamaCppService\x12E\n" +
 	"\n" +
-	"ChatStream\x12\x19.llama_cpp.v1.ChatRequest\x1a\x17.llama_cpp.v1.ChatChunk0\x01\x12L\n" +
-	"\tBatchChat\x12\x1e.llama_cpp.v1.BatchChatRequest\x1a\x1f.llama_cpp.v1.BatchChatResponse\x12@\n" +
-	"\x05Embed\x12\x1a.llama_cpp.v1.EmbedRequest\x1a\x1b.llama_cpp.v1.EmbedResponse\x12O\n" +
+	"SubmitChat\x12\x19.llama_cpp.v1.ChatRequest\x1a\x1c.llama_cpp.v1.SubmitResponse\x12O\n" +
+	"\x0fSubmitBatchChat\x12\x1e.llama_cpp.v1.BatchChatRequest\x1a\x1c.llama_cpp.v1.SubmitResponse\x12G\n" +
+	"\vSubmitEmbed\x12\x1a.llama_cpp.v1.EmbedRequest\x1a\x1c.llama_cpp.v1.SubmitResponse\x12Q\n" +
+	"\x10SubmitBatchEmbed\x12\x1f.llama_cpp.v1.BatchEmbedRequest\x1a\x1c.llama_cpp.v1.SubmitResponse\x12M\n" +
+	"\x0eSubmitTokenize\x12\x1d.llama_cpp.v1.TokenizeRequest\x1a\x1c.llama_cpp.v1.SubmitResponse\x12D\n" +
+	"\tGetResult\x12\x1e.llama_cpp.v1.GetResultRequest\x1a\x17.llama_cpp.v1.JobResult\x12L\n" +
+	"\tCancelJob\x12\x1e.llama_cpp.v1.CancelJobRequest\x1a\x1f.llama_cpp.v1.CancelJobResponse\x12B\n" +
 	"\n" +
-	"BatchEmbed\x12\x1f.llama_cpp.v1.BatchEmbedRequest\x1a .llama_cpp.v1.BatchEmbedResponse\x12I\n" +
-	"\bTokenize\x12\x1d.llama_cpp.v1.TokenizeRequest\x1a\x1e.llama_cpp.v1.TokenizeResponse\x12L\n" +
-	"\tLoadModel\x12\x1e.llama_cpp.v1.LoadModelRequest\x1a\x1f.llama_cpp.v1.LoadModelResponse\x12O\n" +
+	"ChatStream\x12\x19.llama_cpp.v1.ChatRequest\x1a\x17.llama_cpp.v1.ChatChunk0\x01\x12O\n" +
 	"\n" +
-	"ListModels\x12\x1f.llama_cpp.v1.ListModelsRequest\x1a .llama_cpp.v1.ListModelsResponseBYZWgithub.com/chinese-room-solutions/mass-runtime-llama-cpp/gen/go/llama_cpp/v1;llamacppv1b\x06proto3"
+	"ListModels\x12\x1f.llama_cpp.v1.ListModelsRequest\x1a .llama_cpp.v1.ListModelsResponseBaZ_github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/gen/go/llama_cpp/v1;llamacppv1b\x06proto3"
 
 var (
 	file_llama_cpp_v1_service_proto_rawDescOnce sync.Once
@@ -2021,84 +2256,93 @@ func file_llama_cpp_v1_service_proto_rawDescGZIP() []byte {
 }
 
 var file_llama_cpp_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_llama_cpp_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_llama_cpp_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_llama_cpp_v1_service_proto_goTypes = []any{
-	(Role)(0),                  // 0: llama_cpp.v1.Role
-	(FinishReason)(0),          // 1: llama_cpp.v1.FinishReason
-	(CacheType)(0),             // 2: llama_cpp.v1.CacheType
-	(LoadKind)(0),              // 3: llama_cpp.v1.LoadKind
-	(*ContentPart)(nil),        // 4: llama_cpp.v1.ContentPart
-	(*Message)(nil),            // 5: llama_cpp.v1.Message
-	(*Sampling)(nil),           // 6: llama_cpp.v1.Sampling
-	(*ConfigOverride)(nil),     // 7: llama_cpp.v1.ConfigOverride
-	(*Usage)(nil),              // 8: llama_cpp.v1.Usage
-	(*ChatRequest)(nil),        // 9: llama_cpp.v1.ChatRequest
-	(*ChatResponse)(nil),       // 10: llama_cpp.v1.ChatResponse
-	(*ChatChunk)(nil),          // 11: llama_cpp.v1.ChatChunk
-	(*BatchChatRequest)(nil),   // 12: llama_cpp.v1.BatchChatRequest
-	(*BatchChatItem)(nil),      // 13: llama_cpp.v1.BatchChatItem
-	(*BatchChatResponse)(nil),  // 14: llama_cpp.v1.BatchChatResponse
-	(*EmbedRequest)(nil),       // 15: llama_cpp.v1.EmbedRequest
-	(*EmbedResponse)(nil),      // 16: llama_cpp.v1.EmbedResponse
-	(*BatchEmbedRequest)(nil),  // 17: llama_cpp.v1.BatchEmbedRequest
-	(*BatchEmbedResponse)(nil), // 18: llama_cpp.v1.BatchEmbedResponse
-	(*EmbeddingItem)(nil),      // 19: llama_cpp.v1.EmbeddingItem
-	(*TokenizeRequest)(nil),    // 20: llama_cpp.v1.TokenizeRequest
-	(*TokenizeResponse)(nil),   // 21: llama_cpp.v1.TokenizeResponse
-	(*LoadModelRequest)(nil),   // 22: llama_cpp.v1.LoadModelRequest
-	(*LoadModelResponse)(nil),  // 23: llama_cpp.v1.LoadModelResponse
-	(*ListModelsRequest)(nil),  // 24: llama_cpp.v1.ListModelsRequest
-	(*ListModelsResponse)(nil), // 25: llama_cpp.v1.ListModelsResponse
-	(*ModelEntry)(nil),         // 26: llama_cpp.v1.ModelEntry
-	(*ModelCapabilities)(nil),  // 27: llama_cpp.v1.ModelCapabilities
+	(JobStatus)(0),             // 0: llama_cpp.v1.JobStatus
+	(Role)(0),                  // 1: llama_cpp.v1.Role
+	(FinishReason)(0),          // 2: llama_cpp.v1.FinishReason
+	(CacheType)(0),             // 3: llama_cpp.v1.CacheType
+	(*SubmitResponse)(nil),     // 4: llama_cpp.v1.SubmitResponse
+	(*GetResultRequest)(nil),   // 5: llama_cpp.v1.GetResultRequest
+	(*CancelJobRequest)(nil),   // 6: llama_cpp.v1.CancelJobRequest
+	(*CancelJobResponse)(nil),  // 7: llama_cpp.v1.CancelJobResponse
+	(*JobResult)(nil),          // 8: llama_cpp.v1.JobResult
+	(*ContentPart)(nil),        // 9: llama_cpp.v1.ContentPart
+	(*Message)(nil),            // 10: llama_cpp.v1.Message
+	(*Sampling)(nil),           // 11: llama_cpp.v1.Sampling
+	(*ConfigOverride)(nil),     // 12: llama_cpp.v1.ConfigOverride
+	(*Usage)(nil),              // 13: llama_cpp.v1.Usage
+	(*ChatRequest)(nil),        // 14: llama_cpp.v1.ChatRequest
+	(*ChatResponse)(nil),       // 15: llama_cpp.v1.ChatResponse
+	(*ChatChunk)(nil),          // 16: llama_cpp.v1.ChatChunk
+	(*BatchChatRequest)(nil),   // 17: llama_cpp.v1.BatchChatRequest
+	(*BatchChatItem)(nil),      // 18: llama_cpp.v1.BatchChatItem
+	(*BatchChatResponse)(nil),  // 19: llama_cpp.v1.BatchChatResponse
+	(*EmbedRequest)(nil),       // 20: llama_cpp.v1.EmbedRequest
+	(*EmbedResponse)(nil),      // 21: llama_cpp.v1.EmbedResponse
+	(*BatchEmbedRequest)(nil),  // 22: llama_cpp.v1.BatchEmbedRequest
+	(*BatchEmbedResponse)(nil), // 23: llama_cpp.v1.BatchEmbedResponse
+	(*EmbeddingItem)(nil),      // 24: llama_cpp.v1.EmbeddingItem
+	(*TokenizeRequest)(nil),    // 25: llama_cpp.v1.TokenizeRequest
+	(*TokenizeResponse)(nil),   // 26: llama_cpp.v1.TokenizeResponse
+	(*ListModelsRequest)(nil),  // 27: llama_cpp.v1.ListModelsRequest
+	(*ListModelsResponse)(nil), // 28: llama_cpp.v1.ListModelsResponse
+	(*ModelEntry)(nil),         // 29: llama_cpp.v1.ModelEntry
+	(*ModelCapabilities)(nil),  // 30: llama_cpp.v1.ModelCapabilities
 }
 var file_llama_cpp_v1_service_proto_depIdxs = []int32{
-	0,  // 0: llama_cpp.v1.Message.role:type_name -> llama_cpp.v1.Role
-	4,  // 1: llama_cpp.v1.Message.parts:type_name -> llama_cpp.v1.ContentPart
-	2,  // 2: llama_cpp.v1.ConfigOverride.cache_type:type_name -> llama_cpp.v1.CacheType
-	7,  // 3: llama_cpp.v1.ChatRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
-	5,  // 4: llama_cpp.v1.ChatRequest.messages:type_name -> llama_cpp.v1.Message
-	6,  // 5: llama_cpp.v1.ChatRequest.sampling:type_name -> llama_cpp.v1.Sampling
-	5,  // 6: llama_cpp.v1.ChatResponse.message:type_name -> llama_cpp.v1.Message
-	1,  // 7: llama_cpp.v1.ChatResponse.finish_reason:type_name -> llama_cpp.v1.FinishReason
-	8,  // 8: llama_cpp.v1.ChatResponse.usage:type_name -> llama_cpp.v1.Usage
-	5,  // 9: llama_cpp.v1.ChatChunk.delta:type_name -> llama_cpp.v1.Message
-	1,  // 10: llama_cpp.v1.ChatChunk.finish_reason:type_name -> llama_cpp.v1.FinishReason
-	8,  // 11: llama_cpp.v1.ChatChunk.usage:type_name -> llama_cpp.v1.Usage
-	7,  // 12: llama_cpp.v1.BatchChatRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
-	13, // 13: llama_cpp.v1.BatchChatRequest.items:type_name -> llama_cpp.v1.BatchChatItem
-	5,  // 14: llama_cpp.v1.BatchChatItem.messages:type_name -> llama_cpp.v1.Message
-	6,  // 15: llama_cpp.v1.BatchChatItem.sampling:type_name -> llama_cpp.v1.Sampling
-	10, // 16: llama_cpp.v1.BatchChatResponse.responses:type_name -> llama_cpp.v1.ChatResponse
-	7,  // 17: llama_cpp.v1.EmbedRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
-	7,  // 18: llama_cpp.v1.BatchEmbedRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
-	19, // 19: llama_cpp.v1.BatchEmbedResponse.embeddings:type_name -> llama_cpp.v1.EmbeddingItem
-	7,  // 20: llama_cpp.v1.TokenizeRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
-	7,  // 21: llama_cpp.v1.LoadModelRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
-	3,  // 22: llama_cpp.v1.LoadModelRequest.kind:type_name -> llama_cpp.v1.LoadKind
-	26, // 23: llama_cpp.v1.ListModelsResponse.models:type_name -> llama_cpp.v1.ModelEntry
-	27, // 24: llama_cpp.v1.ModelEntry.capabilities:type_name -> llama_cpp.v1.ModelCapabilities
-	9,  // 25: llama_cpp.v1.LlamaCppService.Chat:input_type -> llama_cpp.v1.ChatRequest
-	9,  // 26: llama_cpp.v1.LlamaCppService.ChatStream:input_type -> llama_cpp.v1.ChatRequest
-	12, // 27: llama_cpp.v1.LlamaCppService.BatchChat:input_type -> llama_cpp.v1.BatchChatRequest
-	15, // 28: llama_cpp.v1.LlamaCppService.Embed:input_type -> llama_cpp.v1.EmbedRequest
-	17, // 29: llama_cpp.v1.LlamaCppService.BatchEmbed:input_type -> llama_cpp.v1.BatchEmbedRequest
-	20, // 30: llama_cpp.v1.LlamaCppService.Tokenize:input_type -> llama_cpp.v1.TokenizeRequest
-	22, // 31: llama_cpp.v1.LlamaCppService.LoadModel:input_type -> llama_cpp.v1.LoadModelRequest
-	24, // 32: llama_cpp.v1.LlamaCppService.ListModels:input_type -> llama_cpp.v1.ListModelsRequest
-	10, // 33: llama_cpp.v1.LlamaCppService.Chat:output_type -> llama_cpp.v1.ChatResponse
-	11, // 34: llama_cpp.v1.LlamaCppService.ChatStream:output_type -> llama_cpp.v1.ChatChunk
-	14, // 35: llama_cpp.v1.LlamaCppService.BatchChat:output_type -> llama_cpp.v1.BatchChatResponse
-	16, // 36: llama_cpp.v1.LlamaCppService.Embed:output_type -> llama_cpp.v1.EmbedResponse
-	18, // 37: llama_cpp.v1.LlamaCppService.BatchEmbed:output_type -> llama_cpp.v1.BatchEmbedResponse
-	21, // 38: llama_cpp.v1.LlamaCppService.Tokenize:output_type -> llama_cpp.v1.TokenizeResponse
-	23, // 39: llama_cpp.v1.LlamaCppService.LoadModel:output_type -> llama_cpp.v1.LoadModelResponse
-	25, // 40: llama_cpp.v1.LlamaCppService.ListModels:output_type -> llama_cpp.v1.ListModelsResponse
-	33, // [33:41] is the sub-list for method output_type
-	25, // [25:33] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	0,  // 0: llama_cpp.v1.JobResult.status:type_name -> llama_cpp.v1.JobStatus
+	15, // 1: llama_cpp.v1.JobResult.chat:type_name -> llama_cpp.v1.ChatResponse
+	19, // 2: llama_cpp.v1.JobResult.batch_chat:type_name -> llama_cpp.v1.BatchChatResponse
+	21, // 3: llama_cpp.v1.JobResult.embed:type_name -> llama_cpp.v1.EmbedResponse
+	23, // 4: llama_cpp.v1.JobResult.batch_embed:type_name -> llama_cpp.v1.BatchEmbedResponse
+	26, // 5: llama_cpp.v1.JobResult.tokenize:type_name -> llama_cpp.v1.TokenizeResponse
+	1,  // 6: llama_cpp.v1.Message.role:type_name -> llama_cpp.v1.Role
+	9,  // 7: llama_cpp.v1.Message.parts:type_name -> llama_cpp.v1.ContentPart
+	3,  // 8: llama_cpp.v1.ConfigOverride.cache_type:type_name -> llama_cpp.v1.CacheType
+	12, // 9: llama_cpp.v1.ChatRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
+	10, // 10: llama_cpp.v1.ChatRequest.messages:type_name -> llama_cpp.v1.Message
+	11, // 11: llama_cpp.v1.ChatRequest.sampling:type_name -> llama_cpp.v1.Sampling
+	10, // 12: llama_cpp.v1.ChatResponse.message:type_name -> llama_cpp.v1.Message
+	2,  // 13: llama_cpp.v1.ChatResponse.finish_reason:type_name -> llama_cpp.v1.FinishReason
+	13, // 14: llama_cpp.v1.ChatResponse.usage:type_name -> llama_cpp.v1.Usage
+	10, // 15: llama_cpp.v1.ChatChunk.delta:type_name -> llama_cpp.v1.Message
+	2,  // 16: llama_cpp.v1.ChatChunk.finish_reason:type_name -> llama_cpp.v1.FinishReason
+	13, // 17: llama_cpp.v1.ChatChunk.usage:type_name -> llama_cpp.v1.Usage
+	12, // 18: llama_cpp.v1.BatchChatRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
+	18, // 19: llama_cpp.v1.BatchChatRequest.items:type_name -> llama_cpp.v1.BatchChatItem
+	10, // 20: llama_cpp.v1.BatchChatItem.messages:type_name -> llama_cpp.v1.Message
+	11, // 21: llama_cpp.v1.BatchChatItem.sampling:type_name -> llama_cpp.v1.Sampling
+	15, // 22: llama_cpp.v1.BatchChatResponse.responses:type_name -> llama_cpp.v1.ChatResponse
+	12, // 23: llama_cpp.v1.EmbedRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
+	12, // 24: llama_cpp.v1.BatchEmbedRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
+	24, // 25: llama_cpp.v1.BatchEmbedResponse.embeddings:type_name -> llama_cpp.v1.EmbeddingItem
+	12, // 26: llama_cpp.v1.TokenizeRequest.model_config:type_name -> llama_cpp.v1.ConfigOverride
+	29, // 27: llama_cpp.v1.ListModelsResponse.models:type_name -> llama_cpp.v1.ModelEntry
+	30, // 28: llama_cpp.v1.ModelEntry.capabilities:type_name -> llama_cpp.v1.ModelCapabilities
+	14, // 29: llama_cpp.v1.LlamaCppService.SubmitChat:input_type -> llama_cpp.v1.ChatRequest
+	17, // 30: llama_cpp.v1.LlamaCppService.SubmitBatchChat:input_type -> llama_cpp.v1.BatchChatRequest
+	20, // 31: llama_cpp.v1.LlamaCppService.SubmitEmbed:input_type -> llama_cpp.v1.EmbedRequest
+	22, // 32: llama_cpp.v1.LlamaCppService.SubmitBatchEmbed:input_type -> llama_cpp.v1.BatchEmbedRequest
+	25, // 33: llama_cpp.v1.LlamaCppService.SubmitTokenize:input_type -> llama_cpp.v1.TokenizeRequest
+	5,  // 34: llama_cpp.v1.LlamaCppService.GetResult:input_type -> llama_cpp.v1.GetResultRequest
+	6,  // 35: llama_cpp.v1.LlamaCppService.CancelJob:input_type -> llama_cpp.v1.CancelJobRequest
+	14, // 36: llama_cpp.v1.LlamaCppService.ChatStream:input_type -> llama_cpp.v1.ChatRequest
+	27, // 37: llama_cpp.v1.LlamaCppService.ListModels:input_type -> llama_cpp.v1.ListModelsRequest
+	4,  // 38: llama_cpp.v1.LlamaCppService.SubmitChat:output_type -> llama_cpp.v1.SubmitResponse
+	4,  // 39: llama_cpp.v1.LlamaCppService.SubmitBatchChat:output_type -> llama_cpp.v1.SubmitResponse
+	4,  // 40: llama_cpp.v1.LlamaCppService.SubmitEmbed:output_type -> llama_cpp.v1.SubmitResponse
+	4,  // 41: llama_cpp.v1.LlamaCppService.SubmitBatchEmbed:output_type -> llama_cpp.v1.SubmitResponse
+	4,  // 42: llama_cpp.v1.LlamaCppService.SubmitTokenize:output_type -> llama_cpp.v1.SubmitResponse
+	8,  // 43: llama_cpp.v1.LlamaCppService.GetResult:output_type -> llama_cpp.v1.JobResult
+	7,  // 44: llama_cpp.v1.LlamaCppService.CancelJob:output_type -> llama_cpp.v1.CancelJobResponse
+	16, // 45: llama_cpp.v1.LlamaCppService.ChatStream:output_type -> llama_cpp.v1.ChatChunk
+	28, // 46: llama_cpp.v1.LlamaCppService.ListModels:output_type -> llama_cpp.v1.ListModelsResponse
+	38, // [38:47] is the sub-list for method output_type
+	29, // [29:38] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_llama_cpp_v1_service_proto_init() }
@@ -2106,15 +2350,22 @@ func file_llama_cpp_v1_service_proto_init() {
 	if File_llama_cpp_v1_service_proto != nil {
 		return
 	}
-	file_llama_cpp_v1_service_proto_msgTypes[2].OneofWrappers = []any{}
-	file_llama_cpp_v1_service_proto_msgTypes[3].OneofWrappers = []any{}
+	file_llama_cpp_v1_service_proto_msgTypes[4].OneofWrappers = []any{
+		(*JobResult_Chat)(nil),
+		(*JobResult_BatchChat)(nil),
+		(*JobResult_Embed)(nil),
+		(*JobResult_BatchEmbed)(nil),
+		(*JobResult_Tokenize)(nil),
+	}
+	file_llama_cpp_v1_service_proto_msgTypes[7].OneofWrappers = []any{}
+	file_llama_cpp_v1_service_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_llama_cpp_v1_service_proto_rawDesc), len(file_llama_cpp_v1_service_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   24,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

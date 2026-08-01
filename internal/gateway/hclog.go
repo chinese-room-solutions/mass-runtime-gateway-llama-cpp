@@ -3,6 +3,7 @@ package gateway
 import (
 	"io"
 	"log"
+	"strings"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/rs/zerolog"
@@ -75,7 +76,12 @@ func (z *zlogHCAdapter) StandardLogger(_ *hclog.StandardLoggerOptions) *log.Logg
 	return log.New(z, "", 0)
 }
 func (z *zlogHCAdapter) StandardWriter(_ *hclog.StandardLoggerOptions) io.Writer { return z }
+
+// Write receives raw, unstructured subprocess output relayed by go-plugin.
+// It's diagnostic chatter, not an operational event, so it lands at Debug;
+// the trailing newline is trimmed so the line isn't logged with a dangling
+// break.
 func (z *zlogHCAdapter) Write(p []byte) (int, error) {
-	z.logger.Info().Msg(string(p))
+	z.logger.Debug().Msg(strings.TrimRight(string(p), "\n"))
 	return len(p), nil
 }

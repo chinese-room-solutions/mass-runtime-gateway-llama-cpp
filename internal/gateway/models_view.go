@@ -20,8 +20,8 @@ import (
 // name for stable rendering.
 func groupModels(infos []*parsedModel) []*gatewaypb.Group {
 	type acc struct {
-		types    []string // distinct non-companion model_types in insertion order
-		seenType map[string]bool
+		types    []*gatewaypb.ModelTypeEntry // distinct non-companion model_types in insertion order
+		seenType map[gatewaypb.ModelTypeKind]bool
 		caps     gatewaypb.Capabilities
 		models   []*gatewaypb.Model
 	}
@@ -32,7 +32,7 @@ func groupModels(infos []*parsedModel) []*gatewaypb.Group {
 		key := m.Name
 		g, ok := groups[key]
 		if !ok {
-			g = &acc{seenType: map[string]bool{}}
+			g = &acc{seenType: map[gatewaypb.ModelTypeKind]bool{}}
 			groups[key] = g
 			order = append(order, key)
 		}
@@ -46,11 +46,12 @@ func groupModels(infos []*parsedModel) []*gatewaypb.Group {
 		if m.Capabilities.GetThinking() {
 			g.caps.Thinking = true
 		}
-		// Collect distinct non-companion model_types (projectors
-		// aren't a standalone type). First-seen order is preserved.
-		if m.Companion == "" && m.ModelType != "" && !g.seenType[m.ModelType] {
-			g.seenType[m.ModelType] = true
-			g.types = append(g.types, m.ModelType)
+		// Collect distinct non-companion model types (projectors aren't
+		// a standalone type). First-seen order preserved.
+		entry := modelTypeEntry(m.ModelType)
+		if m.Companion == "" && entry != nil && !g.seenType[entry.Kind] {
+			g.seenType[entry.Kind] = true
+			g.types = append(g.types, entry)
 		}
 		g.models = append(g.models, &gatewaypb.Model{
 			Id:           m.ID,
@@ -59,6 +60,7 @@ func groupModels(infos []*parsedModel) []*gatewaypb.Group {
 			DisplayName:  modelDisplayName(filepath.Base(m.ID)),
 			BadgeText:    m.VariantLabel,
 			Capabilities: cloneCapabilities(m.Capabilities),
+			ModelType:    entry,
 		})
 	}
 
@@ -215,21 +217,31 @@ func titleCaseWords(s string) string {
 	return strings.Join(words, " ")
 }
 
-// titleCaseType normalises gateway-supplied "chat" / "embedding" labels
-// for display.
+// modelTypeEntry maps the parser's internal "chat" / "embedding"
+// label into the typed proto entry MASS branches on. Empty input
+// (projectors etc.) returns nil so the caller can skip the row.
+func modelTypeEntry(t string) *gatewaypb.ModelTypeEntry {
+	switch strings.ToLower(t) {
+	case "chat":
+		return &gatewaypb.ModelTypeEntry{Kind: gatewaypb.ModelTypeKind_MODEL_TYPE_CHAT}
+	case "embedding":
+		return &gatewaypb.ModelTypeEntry{Kind: gatewaypb.ModelTypeKind_MODEL_TYPE_EMBEDDING}
+	default:
+		return nil
+	}
+}
+
+// titleCaseType is the display string the local detail panel shows
+// for a model row (gateway-side rendering only — MASS uses
+// modelTypeEntry instead). Returns "" for projectors and unknowns.
 func titleCaseType(t string) string {
 	switch strings.ToLower(t) {
 	case "chat":
 		return "Chat"
 	case "embedding":
 		return "Embedding"
-	case "mmproj":
-		return "Mmproj"
 	default:
-		if t == "" {
-			return ""
-		}
-		return strings.ToUpper(t[:1]) + t[1:]
+		return ""
 	}
 }
 

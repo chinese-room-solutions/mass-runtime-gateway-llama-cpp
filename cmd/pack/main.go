@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	pack -binary bin/mass-runtime-llama-cpp[.exe] -manifest manifest/runtime.yml -out dist/mass-runtime-llama-cpp.mass
+//	pack -binary bin/mass-runtime-gateway-llama-cpp[.exe] -manifest manifest/runtime.yml -out dist/mass-runtime-gateway-llama-cpp.mass
 //
 // Lives under cmd/ so `go run` from the Makefile picks it up without a
 // global PATH dependency on the system zip(1).
@@ -16,6 +16,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -49,13 +51,56 @@ func buildArchive(outPath, binaryPath, manifestPath string) error {
 	w := zip.NewWriter(out)
 	defer func() { _ = w.Close() }()
 
-	if err := addFile(w, manifestPath, "runtime.yml", 0o644); err != nil {
+	// The archived binary keeps its build-time basename — ".exe" on
+	// Windows, bare elsewhere — so the manifest's static `binary:`
+	// value can't be trusted: it must point at what we actually pack.
+	binaryEntry := "bin/" + filepath.Base(binaryPath)
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("reading manifest %s: %w", manifestPath, err)
+	}
+	manifest, err = rewriteBinaryField(manifest, binaryEntry)
+	if err != nil {
+		return fmt.Errorf("rewriting manifest %s: %w", manifestPath, err)
+	}
+	if err := addBytes(w, manifest, "runtime.yml", 0o644); err != nil {
 		return err
 	}
-	if err := addFile(w, binaryPath, "bin/"+filepath.Base(binaryPath), 0o755); err != nil {
-		return err
+	return addFile(w, binaryPath, binaryEntry, 0o755)
+}
+
+// rewriteBinaryField returns manifestYAML with its top-level `binary:`
+// value set to binaryEntry, adding the field when absent. Works on the
+// YAML node tree so untouched fields (comments, literal blocks) keep
+// their formatting.
+func rewriteBinaryField(manifestYAML []byte, binaryEntry string) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(manifestYAML, &doc); err != nil {
+		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
-	return nil
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("manifest is not a YAML mapping")
+	}
+	m := doc.Content[0]
+	found := false
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == "binary" {
+			m.Content[i+1].SetString(binaryEntry)
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.Content = append(m.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "binary"},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: binaryEntry},
+		)
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding manifest: %w", err)
+	}
+	return out, nil
 }
 
 func addFile(w *zip.Writer, src, dst string, mode os.FileMode) error {
@@ -71,6 +116,19 @@ func addFile(w *zip.Writer, src, dst string, mode os.FileMode) error {
 		return fmt.Errorf("creating zip entry %s: %w", dst, err)
 	}
 	if _, err := io.Copy(zf, f); err != nil {
+		return fmt.Errorf("writing %s into archive: %w", dst, err)
+	}
+	return nil
+}
+
+func addBytes(w *zip.Writer, body []byte, dst string, mode os.FileMode) error {
+	hdr := &zip.FileHeader{Name: dst, Method: zip.Deflate}
+	hdr.SetMode(mode)
+	zf, err := w.CreateHeader(hdr)
+	if err != nil {
+		return fmt.Errorf("creating zip entry %s: %w", dst, err)
+	}
+	if _, err := zf.Write(body); err != nil {
 		return fmt.Errorf("writing %s into archive: %w", dst, err)
 	}
 	return nil

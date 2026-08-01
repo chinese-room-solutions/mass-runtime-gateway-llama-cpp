@@ -4,4 +4,4 @@ display_name: llama.cpp
 description: |
   Runtime gateway for llama.cpp-family inference workers (mass-worker-llama-cpp).
   Serves chat, embed, tokenize via typed API and OpenAI-compatible shim.
-binary: bin/mass-runtime-llama-cpp
+binary: bin/mass-runtime-gateway-llama-cpp
