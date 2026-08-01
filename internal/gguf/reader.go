@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 
@@ -36,6 +37,18 @@ type Meta struct {
 	Version     uint32
 	TensorCount uint64
 	KV          map[string]any // values: string, uint32, int32, float32, uint64, int64, float64, bool, []any
+	// TensorElems is the summed logical element count over the file's
+	// tensor table — an exact whole-file parameter count for single-file
+	// models (quantisation doesn't change element counts). 0 when the
+	// tensor table was absent or unparseable; both sums are best-effort
+	// and never fail ReadMeta.
+	TensorElems uint64
+	// RoutedExpertElems is the slice of TensorElems held by routed MoE
+	// expert tensors — llama.cpp names them blk.N.ffn_{gate,down,up}_exps,
+	// stacked with expert_count as the trailing dimension. Always-active
+	// shared experts (_shexp) and the router (ffn_gate_inp) don't match
+	// and stay in the dense remainder. 0 for dense models.
+	RoutedExpertElems uint64
 }
 
 // GetString returns a string value, or "" if not found or wrong type.
@@ -124,8 +137,27 @@ func (m *Meta) Summary() map[string]string {
 		if v := m.GetUint64(arch + ".block_count"); v != 0 {
 			out["layers"] = fmt.Sprintf("%d", v)
 		}
+		if v := m.GetUint64(arch + ".attention.head_count"); v != 0 {
+			out["head_count"] = fmt.Sprintf("%d", v)
+		}
+		// head_count_kv defaults to head_count under GQA-absent
+		// architectures; absent key → caller falls back to head_count.
+		if v := m.GetUint64(arch + ".attention.head_count_kv"); v != 0 {
+			out["head_count_kv"] = fmt.Sprintf("%d", v)
+		}
 		if vc := m.GetArrayLen("tokenizer.ggml.tokens"); vc != 0 {
 			out["vocab"] = fmt.Sprintf("%d", vc)
+		}
+	}
+	// Vision projector (mmproj) files: surface the encoder shape the
+	// gateway's image-token estimate needs. The keys live under
+	// clip.vision.* rather than the <arch>.* pattern above.
+	if arch == "clip" {
+		if v := m.GetUint64("clip.vision.patch_size"); v != 0 {
+			out["vision_patch_size"] = fmt.Sprintf("%d", v)
+		}
+		if v := m.GetUint64("clip.vision.spatial_merge_size"); v != 0 {
+			out["vision_merge_size"] = fmt.Sprintf("%d", v)
 		}
 	}
 	if tmpl := m.GetString("tokenizer.chat_template"); tmpl != "" {
@@ -148,6 +180,127 @@ func (m *Meta) Summary() map[string]string {
 	}
 	out["tensors"] = fmt.Sprintf("%d", m.TensorCount)
 	return out
+}
+
+// ParameterCount returns the model's total parameter count. Reads
+// general.parameter_count when set (GGUF v3+ writers populate it);
+// otherwise sums the tensor table (exact, but this file only — a shard
+// of a split model under-counts the whole); otherwise parses
+// general.size_label (e.g. "8B", "1.5B", "70M"), approximate at
+// one-sig-fig.
+//
+// Returns 0 only when all three sources are missing — caller then
+// falls back to whatever default it uses for unknown-size models.
+func (m *Meta) ParameterCount() uint64 {
+	if v := m.GetUint64("general.parameter_count"); v > 0 {
+		return v
+	}
+	if m.TensorElems > 0 {
+		return m.TensorElems
+	}
+	return parseSizeLabel(m.GetString("general.size_label"))
+}
+
+// ActiveParameterCount returns the parameters touched per generated
+// token — the count compute cost scales with. For dense models this
+// equals [Meta.ParameterCount]. MoE models route each token through
+// expert_used_count of expert_count experts, so only used/count of the
+// routed-expert weights participate in a forward pass: pricing the
+// total over-predicted MoE cost by up to ~20× (gpt-oss-120b runs ~5B
+// of its 117B per token), far beyond the scheduler's correction-EWMA
+// clamp.
+//
+//	active = total − routed_expert_params × (count − used) / count
+//
+// Falls back to the total when the expert metadata keys or the tensor
+// sums are missing or inconsistent (e.g. an approximate size_label
+// total smaller than the routed-expert sum, or a split-model shard) —
+// over-predicting is the safe direction.
+func (m *Meta) ActiveParameterCount() uint64 {
+	total := m.ParameterCount()
+	if total == 0 || m.RoutedExpertElems == 0 || m.RoutedExpertElems >= total {
+		return total
+	}
+	arch := m.GetString("general.architecture")
+	if arch == "" {
+		return total
+	}
+	count := m.GetUint64(arch + ".expert_count")
+	used := m.GetUint64(arch + ".expert_used_count")
+	if count == 0 || used == 0 || used >= count {
+		return total
+	}
+	// Per-expert element count is exact: routed tensors stack all
+	// experts, so the sum divides evenly by expert_count.
+	inactive := m.RoutedExpertElems / count * (count - used)
+	return total - inactive
+}
+
+// parseSizeLabel converts "8B" / "1.5B" / "70M" / "175B" into a
+// parameter count. Returns 0 on unrecognised input. Case-insensitive
+// suffix; supports K, M, B, T.
+func parseSizeLabel(s string) uint64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	last := s[len(s)-1]
+	var mult uint64
+	switch last {
+	case 'K', 'k':
+		mult = 1_000
+	case 'M', 'm':
+		mult = 1_000_000
+	case 'B', 'b':
+		mult = 1_000_000_000
+	case 'T', 't':
+		mult = 1_000_000_000_000
+	default:
+		return 0
+	}
+	num := s[:len(s)-1]
+	var whole, frac uint64
+	if dot := strings.IndexByte(num, '.'); dot >= 0 {
+		w, err := parseUintLoose(num[:dot])
+		if err != nil {
+			return 0
+		}
+		whole = w
+		fracStr := num[dot+1:]
+		f, err := parseUintLoose(fracStr)
+		if err != nil {
+			return 0
+		}
+		frac = f
+		// Treat the fractional part as a single decimal place: "1.5B"
+		// → 1.5 × 1e9 = 1_500_000_000. parseUintLoose("5") returns 5
+		// so we scale by 10^len(fracStr).
+		fracMult := uint64(1)
+		for range fracStr {
+			fracMult *= 10
+		}
+		return whole*mult + frac*mult/fracMult
+	}
+	w, err := parseUintLoose(num)
+	if err != nil {
+		return 0
+	}
+	whole = w
+	return whole * mult
+}
+
+func parseUintLoose(s string) (uint64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	var v uint64
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("non-digit")
+		}
+		v = v*10 + uint64(r-'0')
+	}
+	return v, nil
 }
 
 // HasThinkingTemplate reports whether a GGUF chat template advertises
@@ -269,7 +422,56 @@ func ReadMeta(path string) (*Meta, error) {
 		}
 		meta.KV[key] = val
 	}
+	meta.TensorElems, meta.RoutedExpertElems = r.tensorSums(tensorCount)
 	return meta, nil
+}
+
+// tensorSums walks the tensor-info table (which follows the KV section:
+// per tensor a name string, uint32 n_dims, uint64 dims[n_dims], uint32
+// ggml type, uint64 data offset) and returns the total element count
+// plus the routed-MoE-expert subset ("_exps." infix — see
+// [Meta.RoutedExpertElems]). Element counts are quantisation-agnostic
+// parameter counts.
+//
+// Best-effort: any parse error, an implausible dimension count, or an
+// overflowing product returns (0, 0) — the sums feed cost estimation,
+// so "unknown" beats a partial or corrupt number.
+func (r *reader) tensorSums(tensorCount uint64) (total, exps uint64) {
+	if tensorCount > 1_000_000 {
+		return 0, 0
+	}
+	for i := uint64(0); i < tensorCount; i++ {
+		name, err := r.str()
+		if err != nil {
+			return 0, 0
+		}
+		nDims, err := r.u32()
+		if err != nil || nDims > 8 { // spec caps at 4; defensive headroom
+			return 0, 0
+		}
+		elems := uint64(1)
+		for d := uint32(0); d < nDims; d++ {
+			dim, err := r.u64()
+			if err != nil {
+				return 0, 0
+			}
+			if dim != 0 && elems > math.MaxUint64/dim {
+				return 0, 0
+			}
+			elems *= dim
+		}
+		if _, err := r.u32(); err != nil { // ggml type
+			return 0, 0
+		}
+		if _, err := r.u64(); err != nil { // data offset
+			return 0, 0
+		}
+		total += elems
+		if strings.Contains(name, "_exps.") {
+			exps += elems
+		}
+	}
+	return total, exps
 }
 
 // reader wraps an io.Reader for little-endian binary reading.
@@ -277,16 +479,43 @@ type reader struct {
 	r io.Reader
 }
 
-func (r *reader) u8() (uint8, error)  { var v uint8; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) i8() (int8, error)   { var v int8; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) u16() (uint16, error){ var v uint16; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) i16() (int16, error) { var v int16; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) u32() (uint32, error){ var v uint32; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) i32() (int32, error) { var v int32; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) u64() (uint64, error){ var v uint64; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) i64() (int64, error) { var v int64; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) f32() (float32, error){ var v float32; return v, binary.Read(r.r, binary.LittleEndian, &v) }
-func (r *reader) f64() (float64, error){ var v float64; return v, binary.Read(r.r, binary.LittleEndian, &v) }
+func (r *reader) u8() (uint8, error) {
+	var v uint8
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) i8() (int8, error) { var v int8; return v, binary.Read(r.r, binary.LittleEndian, &v) }
+func (r *reader) u16() (uint16, error) {
+	var v uint16
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) i16() (int16, error) {
+	var v int16
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) u32() (uint32, error) {
+	var v uint32
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) i32() (int32, error) {
+	var v int32
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) u64() (uint64, error) {
+	var v uint64
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) i64() (int64, error) {
+	var v int64
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) f32() (float32, error) {
+	var v float32
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
+func (r *reader) f64() (float64, error) {
+	var v float64
+	return v, binary.Read(r.r, binary.LittleEndian, &v)
+}
 func (r *reader) boolean() (bool, error) {
 	b, err := r.u8()
 	return b != 0, err

@@ -2,19 +2,35 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
 	"github.com/KernelPryanic/ctxerr"
 	llamacpp "github.com/chinese-room-solutions/mass-proto/gen/go/llama-cpp"
-	llamacppv1 "github.com/chinese-room-solutions/mass-runtime-llama-cpp/gen/go/llama_cpp/v1"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/model"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/payload"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/sched"
+	workerpb "github.com/chinese-room-solutions/mass-proto/gen/go/worker"
+	llamacppv1 "github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/gen/go/llama_cpp/v1"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/model"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/payload"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/sched"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// resolve validates a model path and builds its load artifacts + model id,
+// returning gRPC status errors on bad input. Shared by the Submit handlers.
+func (s *grpcServer) resolve(modelStr string, cfg *llamacppv1.ConfigOverride, kind llamacpp.LoadKind) (string, *llamacpp.LoadHints, []*workerpb.ModelFile, error) {
+	storePath, err := s.h.resolveStorePath(modelStr)
+	if err != nil {
+		return "", nil, nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	hints, files, err := s.h.buildLoadArtifacts(modelStr, configFromOverride(cfg), kind)
+	if err != nil {
+		return "", nil, nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
+	}
+	return model.ID(storePath, hints), hints, files, nil
+}
 
 // grpcServer implements llama_cpp.v1.LlamaCppService. It shares the gateway's
 // dispatch helpers (h.scheduler, h.buildLoadArtifacts, ...) so the typed gRPC
@@ -29,52 +45,39 @@ func newGRPCServer(h *handlers) *grpcServer {
 	return &grpcServer{h: h}
 }
 
-// --- Chat ---
+// --- Submit (enqueue, return job id) ---
 
-func (s *grpcServer) Chat(ctx context.Context, req *llamacppv1.ChatRequest) (*llamacppv1.ChatResponse, error) {
-	if req.GetModel() == "" {
-		return nil, status.Error(codes.InvalidArgument, "model is required")
-	}
-	storePath := model.ResolveModelPath(req.GetModel())
-	if storePath == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "model: invalid path %q", req.GetModel())
-	}
-	hints, files, err := s.h.buildLoadArtifacts(req.GetModel(), configFromOverride(req.GetModelConfig()), llamacpp.LoadKind_LOAD_KIND_CHAT)
+// submitJob is the shared gRPC submit path: build → SubmitOnly → {job_id}. The
+// build closure owns request validation + job/artifact assembly and returns a
+// gRPC status error on bad input (pre-schedule failures stay honest codes).
+func (s *grpcServer) submitJob(ctx context.Context, build func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error)) (*llamacppv1.SubmitResponse, error) {
+	job, modelID, hints, files, err := build()
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
+		return nil, err
 	}
-	modelID := model.ID(storePath, hints)
-
-	job := chatJobFromMessages(messagesFromProto(req.GetMessages()), samplingFromProto(req.GetSampling()), false)
-	chunks, err := s.h.dispatch(ctx, modelID, job, hints, files)
+	params, err := s.h.buildScheduleParams(ctx, modelID, job, hints, files)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "dispatch: %v", err)
+		return nil, status.Errorf(codes.Internal, "build schedule params: %v", err)
 	}
+	jobID, err := s.h.scheduler.SubmitOnly(ctx, params)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "submit: %v", err)
+	}
+	return &llamacppv1.SubmitResponse{JobId: jobID}, nil
+}
 
-	resp := &llamacppv1.ChatResponse{
-		Id:    "chatcmpl-" + uuid.NewString(),
-		Model: req.GetModel(),
-	}
-	for c := range chunks {
-		switch c.Type {
-		case sched.ChunkCompleted:
-			if len(c.Final) == 0 {
-				continue
-			}
-			dec, decErr := payload.DecodeJobChunk(c.Final)
-			if decErr != nil {
-				return nil, status.Errorf(codes.Internal, "decode final chunk: %v", decErr)
-			}
-			cf := dec.GetChatFinal()
-			if cf == nil {
-				continue
-			}
-			applyChatFinalProto(resp, cf)
-		case sched.ChunkError:
-			return nil, status.Errorf(codes.Internal, "worker: %s", c.ErrText)
+func (s *grpcServer) SubmitChat(ctx context.Context, req *llamacppv1.ChatRequest) (*llamacppv1.SubmitResponse, error) {
+	return s.submitJob(ctx, func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error) {
+		if req.GetModel() == "" {
+			return nil, "", nil, nil, status.Error(codes.InvalidArgument, "model is required")
 		}
-	}
-	return resp, nil
+		modelID, hints, files, err := s.resolve(req.GetModel(), req.GetModelConfig(), llamacpp.LoadKind_LOAD_KIND_CHAT)
+		if err != nil {
+			return nil, "", nil, nil, err
+		}
+		job := chatJobFromMessages(messagesFromProto(req.GetMessages()), samplingFromProto(req.GetSampling()), false)
+		return job, modelID, hints, files, nil
+	})
 }
 
 func (s *grpcServer) ChatStream(req *llamacppv1.ChatRequest, stream llamacppv1.LlamaCppService_ChatStreamServer) error {
@@ -92,10 +95,11 @@ func (s *grpcServer) ChatStream(req *llamacppv1.ChatRequest, stream llamacppv1.L
 	modelID := model.ID(storePath, hints)
 
 	job := chatJobFromMessages(messagesFromProto(req.GetMessages()), samplingFromProto(req.GetSampling()), true)
-	chunks, err := s.h.dispatch(stream.Context(), modelID, job, hints, files)
+	jobID, chunks, err := s.h.dispatchWithID(stream.Context(), modelID, job, hints, files)
 	if err != nil {
 		return status.Errorf(codes.Internal, "dispatch: %v", err)
 	}
+	warnDecode := s.h.decodeWarner(jobID)
 
 	id := "chatcmpl-" + uuid.NewString()
 	for c := range chunks {
@@ -103,6 +107,7 @@ func (s *grpcServer) ChatStream(req *llamacppv1.ChatRequest, stream llamacppv1.L
 		case sched.ChunkBody:
 			dec, decErr := payload.DecodeJobChunk(c.Chunk)
 			if decErr != nil {
+				warnDecode(decErr)
 				continue
 			}
 			delta := dec.GetChat()
@@ -110,10 +115,10 @@ func (s *grpcServer) ChatStream(req *llamacppv1.ChatRequest, stream llamacppv1.L
 				continue
 			}
 			if err := stream.Send(&llamacppv1.ChatChunk{
-				Id:              id,
-				Model:           req.GetModel(),
-				Delta:           &llamacppv1.Message{Role: roleToProto(delta.GetRole()), Content: delta.GetContent()},
-				ReasoningDelta:  delta.GetReasoningContent(),
+				Id:             id,
+				Model:          req.GetModel(),
+				Delta:          &llamacppv1.Message{Role: roleToProto(delta.GetRole()), Content: delta.GetContent()},
+				ReasoningDelta: delta.GetReasoningContent(),
 			}); err != nil {
 				return ctxerr.With(fmt.Errorf("sending chat chunk: %w", err), nil)
 			}
@@ -169,212 +174,180 @@ func (s *grpcServer) ChatStream(req *llamacppv1.ChatRequest, stream llamacppv1.L
 	return nil
 }
 
-// --- Batch chat ---
-
-func (s *grpcServer) BatchChat(ctx context.Context, req *llamacppv1.BatchChatRequest) (*llamacppv1.BatchChatResponse, error) {
-	if len(req.GetItems()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "items must be non-empty")
-	}
-	storePath := model.ResolveModelPath(req.GetModel())
-	if storePath == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "model: invalid path %q", req.GetModel())
-	}
-	hints, files, err := s.h.buildLoadArtifacts(req.GetModel(), configFromOverride(req.GetModelConfig()), llamacpp.LoadKind_LOAD_KIND_CHAT)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
-	}
-	modelID := model.ID(storePath, hints)
-
-	out := make([]*llamacppv1.ChatResponse, len(req.GetItems()))
-	for i, item := range req.GetItems() {
-		job := chatJobFromMessages(messagesFromProto(item.GetMessages()), samplingFromProto(item.GetSampling()), false)
-		chunks, err := s.h.dispatch(ctx, modelID, job, hints, files)
+func (s *grpcServer) SubmitBatchChat(ctx context.Context, req *llamacppv1.BatchChatRequest) (*llamacppv1.SubmitResponse, error) {
+	return s.submitJob(ctx, func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error) {
+		if len(req.GetItems()) == 0 {
+			return nil, "", nil, nil, status.Error(codes.InvalidArgument, "items must be non-empty")
+		}
+		modelID, hints, files, err := s.resolve(req.GetModel(), req.GetModelConfig(), llamacpp.LoadKind_LOAD_KIND_CHAT)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "item %d dispatch: %v", i, err)
+			return nil, "", nil, nil, err
 		}
-		resp := &llamacppv1.ChatResponse{
-			Id:    "chatcmpl-" + uuid.NewString(),
-			Model: req.GetModel(),
-		}
-		for c := range chunks {
-			switch c.Type {
-			case sched.ChunkCompleted:
-				if len(c.Final) == 0 {
-					continue
-				}
-				if dec, decErr := payload.DecodeJobChunk(c.Final); decErr == nil {
-					if cf := dec.GetChatFinal(); cf != nil {
-						applyChatFinalProto(resp, cf)
-					}
-				}
-			case sched.ChunkError:
-				return nil, status.Errorf(codes.Internal, "item %d worker: %s", i, c.ErrText)
+		items := make([]*llamacpp.BatchChatItem, len(req.GetItems()))
+		for i, it := range req.GetItems() {
+			items[i] = &llamacpp.BatchChatItem{
+				Messages: chatMessagesToProto(messagesFromProto(it.GetMessages())),
+				Sampling: convertSampling(samplingFromProto(it.GetSampling())),
 			}
 		}
-		out[i] = resp
-	}
-	return &llamacppv1.BatchChatResponse{Responses: out}, nil
-}
-
-// --- Embed ---
-
-func (s *grpcServer) Embed(ctx context.Context, req *llamacppv1.EmbedRequest) (*llamacppv1.EmbedResponse, error) {
-	storePath := model.ResolveModelPath(req.GetModel())
-	if storePath == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "model: invalid path %q", req.GetModel())
-	}
-	hints, files, err := s.h.buildLoadArtifacts(req.GetModel(), configFromOverride(req.GetModelConfig()), llamacpp.LoadKind_LOAD_KIND_EMBEDDING)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
-	}
-	modelID := model.ID(storePath, hints)
-
-	job := &llamacpp.Job{
-		Kind: llamacpp.JobKind_JOB_KIND_EMBED,
-		Body: &llamacpp.Job_Embed{Embed: &llamacpp.EmbedJob{Input: req.GetInput()}},
-	}
-	chunks, err := s.h.dispatch(ctx, modelID, job, hints, files)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "dispatch: %v", err)
-	}
-	resp := &llamacppv1.EmbedResponse{Id: uuid.NewString(), Model: req.GetModel()}
-	for c := range chunks {
-		switch c.Type {
-		case sched.ChunkCompleted:
-			if len(c.Final) == 0 {
-				continue
-			}
-			if dec, decErr := payload.DecodeJobChunk(c.Final); decErr == nil {
-				if er := dec.GetEmbed(); er != nil {
-					resp.Embedding = er.GetEmbedding()
-				}
-			}
-		case sched.ChunkError:
-			return nil, status.Errorf(codes.Internal, "worker: %s", c.ErrText)
+		job := &llamacpp.Job{
+			Kind: llamacpp.JobKind_JOB_KIND_BATCH_CHAT,
+			Body: &llamacpp.Job_BatchChat{BatchChat: &llamacpp.BatchChatJob{Items: items}},
 		}
-	}
-	return resp, nil
-}
-
-func (s *grpcServer) BatchEmbed(ctx context.Context, req *llamacppv1.BatchEmbedRequest) (*llamacppv1.BatchEmbedResponse, error) {
-	storePath := model.ResolveModelPath(req.GetModel())
-	if storePath == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "model: invalid path %q", req.GetModel())
-	}
-	hints, files, err := s.h.buildLoadArtifacts(req.GetModel(), configFromOverride(req.GetModelConfig()), llamacpp.LoadKind_LOAD_KIND_EMBEDDING)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
-	}
-	modelID := model.ID(storePath, hints)
-
-	job := &llamacpp.Job{
-		Kind: llamacpp.JobKind_JOB_KIND_BATCH_EMBED,
-		Body: &llamacpp.Job_BatchEmbed{BatchEmbed: &llamacpp.BatchEmbedJob{Inputs: req.GetInputs()}},
-	}
-	chunks, err := s.h.dispatch(ctx, modelID, job, hints, files)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "dispatch: %v", err)
-	}
-	resp := &llamacppv1.BatchEmbedResponse{Id: uuid.NewString(), Model: req.GetModel()}
-	for c := range chunks {
-		switch c.Type {
-		case sched.ChunkCompleted:
-			if len(c.Final) == 0 {
-				continue
-			}
-			if dec, decErr := payload.DecodeJobChunk(c.Final); decErr == nil {
-				if br := dec.GetBatchEmbed(); br != nil {
-					resp.Embeddings = make([]*llamacppv1.EmbeddingItem, len(br.GetItems()))
-					for i, it := range br.GetItems() {
-						resp.Embeddings[i] = &llamacppv1.EmbeddingItem{Index: it.GetIndex(), Embedding: it.GetEmbedding()}
-					}
-				}
-			}
-		case sched.ChunkError:
-			return nil, status.Errorf(codes.Internal, "worker: %s", c.ErrText)
-		}
-	}
-	return resp, nil
-}
-
-// --- Tokenize ---
-
-func (s *grpcServer) Tokenize(ctx context.Context, req *llamacppv1.TokenizeRequest) (*llamacppv1.TokenizeResponse, error) {
-	storePath := model.ResolveModelPath(req.GetModel())
-	if storePath == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "model: invalid path %q", req.GetModel())
-	}
-	// Tokenize uses the chat tokenizer; same load kind as chat.
-	hints, files, err := s.h.buildLoadArtifacts(req.GetModel(), configFromOverride(req.GetModelConfig()), llamacpp.LoadKind_LOAD_KIND_CHAT)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
-	}
-	modelID := model.ID(storePath, hints)
-	job := &llamacpp.Job{
-		Kind: llamacpp.JobKind_JOB_KIND_TOKENIZE,
-		Body: &llamacpp.Job_Tokenize{Tokenize: &llamacpp.TokenizeJob{Text: req.GetText()}},
-	}
-	chunks, err := s.h.dispatch(ctx, modelID, job, hints, files)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "dispatch: %v", err)
-	}
-	resp := &llamacppv1.TokenizeResponse{}
-	for c := range chunks {
-		switch c.Type {
-		case sched.ChunkCompleted:
-			if len(c.Final) == 0 {
-				continue
-			}
-			if dec, decErr := payload.DecodeJobChunk(c.Final); decErr == nil {
-				if tr := dec.GetTokenize(); tr != nil {
-					resp.Tokens = tr.GetTokens()
-				}
-			}
-		case sched.ChunkError:
-			return nil, status.Errorf(codes.Internal, "worker: %s", c.ErrText)
-		}
-	}
-	return resp, nil
-}
-
-// --- Load / list ---
-
-func (s *grpcServer) LoadModel(ctx context.Context, req *llamacppv1.LoadModelRequest) (*llamacppv1.LoadModelResponse, error) {
-	storePath := model.ResolveModelPath(req.GetModel())
-	if storePath == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "model: invalid path %q", req.GetModel())
-	}
-	kind := llamacpp.LoadKind_LOAD_KIND_CHAT
-	if req.GetKind() == llamacppv1.LoadKind_LOAD_KIND_EMBEDDING {
-		kind = llamacpp.LoadKind_LOAD_KIND_EMBEDDING
-	}
-	hints, files, err := s.h.buildLoadArtifacts(req.GetModel(), configFromOverride(req.GetModelConfig()), kind)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "build load artifacts: %v", err)
-	}
-	modelID := model.ID(storePath, hints)
-	hintsBytes, err := payload.EncodeLoadHints(hints)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "encode hints: %v", err)
-	}
-	instances, err := s.h.scheduler.EnsureModelLoaded(ctx, sched.EnsureModelLoadedParams{
-		ModelID:   modelID,
-		Files:     files,
-		LoadHints: hintsBytes,
-		Source:    sourceFromContext(ctx),
+		return job, modelID, hints, files, nil
 	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "ensure loaded: %v", err)
-	}
-	if len(instances) == 0 {
-		return nil, status.Error(codes.Internal, "scheduler returned no instances")
-	}
-	return &llamacppv1.LoadModelResponse{
-		ModelId:  modelID,
-		WorkerId: instances[0].WorkerID,
-		PoolSize: instances[0].PoolSize,
-	}, nil
 }
+
+func (s *grpcServer) SubmitEmbed(ctx context.Context, req *llamacppv1.EmbedRequest) (*llamacppv1.SubmitResponse, error) {
+	return s.submitJob(ctx, func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error) {
+		modelID, hints, files, err := s.resolve(req.GetModel(), req.GetModelConfig(), llamacpp.LoadKind_LOAD_KIND_EMBEDDING)
+		if err != nil {
+			return nil, "", nil, nil, err
+		}
+		job := &llamacpp.Job{
+			Kind: llamacpp.JobKind_JOB_KIND_EMBED,
+			Body: &llamacpp.Job_Embed{Embed: &llamacpp.EmbedJob{Input: req.GetInput()}},
+		}
+		return job, modelID, hints, files, nil
+	})
+}
+
+func (s *grpcServer) SubmitBatchEmbed(ctx context.Context, req *llamacppv1.BatchEmbedRequest) (*llamacppv1.SubmitResponse, error) {
+	return s.submitJob(ctx, func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error) {
+		modelID, hints, files, err := s.resolve(req.GetModel(), req.GetModelConfig(), llamacpp.LoadKind_LOAD_KIND_EMBEDDING)
+		if err != nil {
+			return nil, "", nil, nil, err
+		}
+		job := &llamacpp.Job{
+			Kind: llamacpp.JobKind_JOB_KIND_BATCH_EMBED,
+			Body: &llamacpp.Job_BatchEmbed{BatchEmbed: &llamacpp.BatchEmbedJob{Inputs: req.GetInputs()}},
+		}
+		return job, modelID, hints, files, nil
+	})
+}
+
+func (s *grpcServer) SubmitTokenize(ctx context.Context, req *llamacppv1.TokenizeRequest) (*llamacppv1.SubmitResponse, error) {
+	return s.submitJob(ctx, func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error) {
+		// Tokenize uses the chat tokenizer; same load kind as chat.
+		modelID, hints, files, err := s.resolve(req.GetModel(), req.GetModelConfig(), llamacpp.LoadKind_LOAD_KIND_CHAT)
+		if err != nil {
+			return nil, "", nil, nil, err
+		}
+		job := &llamacpp.Job{
+			Kind: llamacpp.JobKind_JOB_KIND_TOKENIZE,
+			Body: &llamacpp.Job_Tokenize{Tokenize: &llamacpp.TokenizeJob{Text: req.GetText()}},
+		}
+		return job, modelID, hints, files, nil
+	})
+}
+
+// --- Fetch / cancel ---
+
+// GetResult reads a submitted job's result by id. wait=true drains the reattach
+// stream to terminal (durable read — a client disconnect ends the drain but
+// never cancels the job); wait=false returns the current status without
+// blocking. The stored terminal chunk self-describes its type, so one method
+// serves chat/batch-chat/embed/batch-embed/tokenize.
+func (s *grpcServer) GetResult(ctx context.Context, req *llamacppv1.GetResultRequest) (*llamacppv1.JobResult, error) {
+	id := req.GetJobId()
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id is required")
+	}
+	if req.GetWait() {
+		for range s.h.scheduler.Reattach(ctx, id) { //nolint:revive // drain to terminal; result read below
+		}
+		if ctx.Err() != nil {
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+	}
+	res, err := s.h.scheduler.GetResult(ctx, id)
+	if err != nil {
+		if errors.Is(err, sched.ErrResultNotFound) {
+			return nil, status.Errorf(codes.NotFound, "job %q not found or expired", id)
+		}
+		return nil, status.Errorf(codes.Internal, "get result: %v", err)
+	}
+
+	out := &llamacppv1.JobResult{Status: jobStatusToProto(res.Status)}
+	switch res.Status {
+	case sched.ResultError:
+		out.Error = res.Err
+	case sched.ResultDone:
+		if err := applyJobResultProto(out, res.Body); err != nil {
+			return nil, status.Errorf(codes.Internal, "decode result: %v", err)
+		}
+	}
+	return out, nil
+}
+
+// CancelJob cancels a submitted job (pending or running) by id.
+func (s *grpcServer) CancelJob(ctx context.Context, req *llamacppv1.CancelJobRequest) (*llamacppv1.CancelJobResponse, error) {
+	id := req.GetJobId()
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id is required")
+	}
+	if err := s.h.scheduler.CancelJob(ctx, id); err != nil {
+		if errors.Is(err, sched.ErrResultNotFound) {
+			return nil, status.Errorf(codes.NotFound, "job %q not cancellable (finished, unknown, or expired)", id)
+		}
+		return nil, status.Errorf(codes.Internal, "cancel job: %v", err)
+	}
+	return &llamacppv1.CancelJobResponse{}, nil
+}
+
+// applyJobResultProto fills the JobResult oneof from a stored terminal JobChunk,
+// switching on its self-describing type — the proto mirror of decodeJobResult.
+func applyJobResultProto(out *llamacppv1.JobResult, body []byte) error {
+	if len(body) == 0 {
+		return nil
+	}
+	dec, err := payload.DecodeJobChunk(body)
+	if err != nil {
+		return ctxerr.With(fmt.Errorf("decoding job result: %w", err), nil)
+	}
+	switch {
+	case dec.GetChatFinal() != nil:
+		resp := &llamacppv1.ChatResponse{Id: "chatcmpl-" + uuid.NewString()}
+		applyChatFinalProto(resp, dec.GetChatFinal())
+		out.Result = &llamacppv1.JobResult_Chat{Chat: resp}
+	case dec.GetBatchChat() != nil:
+		br := dec.GetBatchChat()
+		resp := &llamacppv1.BatchChatResponse{Responses: make([]*llamacppv1.ChatResponse, len(br.GetItems()))}
+		for i, cf := range br.GetItems() {
+			resp.Responses[i] = &llamacppv1.ChatResponse{Id: cf.GetId()}
+			applyChatFinalProto(resp.Responses[i], cf)
+		}
+		out.Result = &llamacppv1.JobResult_BatchChat{BatchChat: resp}
+	case dec.GetEmbed() != nil:
+		out.Result = &llamacppv1.JobResult_Embed{Embed: &llamacppv1.EmbedResponse{Embedding: dec.GetEmbed().GetEmbedding()}}
+	case dec.GetBatchEmbed() != nil:
+		br := dec.GetBatchEmbed()
+		resp := &llamacppv1.BatchEmbedResponse{Embeddings: make([]*llamacppv1.EmbeddingItem, len(br.GetItems()))}
+		for i, it := range br.GetItems() {
+			resp.Embeddings[i] = &llamacppv1.EmbeddingItem{Index: it.GetIndex(), Embedding: it.GetEmbedding()}
+		}
+		out.Result = &llamacppv1.JobResult_BatchEmbed{BatchEmbed: resp}
+	case dec.GetTokenize() != nil:
+		out.Result = &llamacppv1.JobResult_Tokenize{Tokenize: &llamacppv1.TokenizeResponse{Tokens: dec.GetTokenize().GetTokens()}}
+	}
+	return nil
+}
+
+// jobStatusToProto maps the scheduler's result status to the proto enum.
+func jobStatusToProto(s sched.ResultStatus) llamacppv1.JobStatus {
+	switch s {
+	case sched.ResultProcessing:
+		return llamacppv1.JobStatus_JOB_STATUS_PROCESSING
+	case sched.ResultDone:
+		return llamacppv1.JobStatus_JOB_STATUS_DONE
+	case sched.ResultError:
+		return llamacppv1.JobStatus_JOB_STATUS_ERROR
+	default:
+		return llamacppv1.JobStatus_JOB_STATUS_PENDING
+	}
+}
+
+// --- List ---
 
 // ListModels is the typed app-facing model catalog. It walks the gateway's
 // models_dir using the same shared [parseModelInfo] cache as the
@@ -416,30 +389,35 @@ func configFromOverride(o *llamacppv1.ConfigOverride) *loadConfig {
 		return nil
 	}
 	return &loadConfig{
-		ContextSize:    o.GetContextSize(),
-		BatchSize:      optionalInt32(o.BatchSize),
-		GPULayers:      optionalInt32(o.GpuLayers),
-		FlashAttn:      optionalBool(o.FlashAttn),
-		Threads:        optionalInt32(o.Threads),
-		MaxConcurrent:  optionalInt32(o.MaxConcurrent),
-		Thinking:       o.GetThinking(),
-		MainGPU:        o.GetMainGpu(),
-		TensorSplit:    o.GetTensorSplit(),
-		MmprojFilename: filepath.Base(o.GetMmprojFilename()),
-		ChatTemplate:   o.GetChatTemplate(),
-		CacheType:      cacheTypeFromProto(o.GetCacheType()),
+		ContextSize:     o.GetContextSize(),
+		BatchSize:       optionalPtr(o.BatchSize),
+		GPULayers:       optionalPtr(o.GpuLayers),
+		FlashAttn:       optionalPtr(o.FlashAttn),
+		Threads:         optionalPtr(o.Threads),
+		MaxConcurrent:   optionalPtr(o.MaxConcurrent),
+		VramHeadroomPct: optionalPtr(o.VramHeadroomPct),
+		Thinking:        o.GetThinking(),
+		MmprojFilename:  mmprojBaseFromProto(o.GetMmprojFilename()),
+		ChatTemplate:    o.GetChatTemplate(),
+		CacheType:       cacheTypeFromProto(o.GetCacheType()),
 	}
 }
 
-func optionalInt32(p *int32) *int32 {
-	if p == nil {
-		return nil
+// mmprojBaseFromProto strips any directory components from the proto
+// field, but returns "" for the empty input — filepath.Base("") returns
+// ".", which downstream code (handlers.go:buildLoadArtifacts) interprets
+// as "mmproj filename set" and tries to load the model's directory as
+// a CLIP model.
+func mmprojBaseFromProto(s string) string {
+	if s == "" {
+		return ""
 	}
-	v := *p
-	return &v
+	return filepath.Base(s)
 }
 
-func optionalBool(p *bool) *bool {
+// optionalPtr copies an optional proto field so downstream structs never
+// alias proto message memory.
+func optionalPtr[T any](p *T) *T {
 	if p == nil {
 		return nil
 	}
@@ -493,16 +471,16 @@ func samplingFromProto(s *llamacppv1.Sampling) *samplingParams {
 		return nil
 	}
 	return &samplingParams{
-		MaxTokens:        optionalInt32(s.MaxTokens),
-		Temperature:      s.GetTemperature(),
-		TopP:             s.GetTopP(),
-		TopK:             s.GetTopK(),
-		Seed:             optionalInt32(s.Seed),
+		MaxTokens:        optionalPtr(s.MaxTokens),
+		Temperature:      optionalPtr(s.Temperature),
+		TopP:             optionalPtr(s.TopP),
+		TopK:             optionalPtr(s.TopK),
+		Seed:             optionalPtr(s.Seed),
 		Stop:             s.GetStop(),
-		MinP:             s.GetMinP(),
-		RepeatPenalty:    s.GetRepeatPenalty(),
-		FrequencyPenalty: s.GetFrequencyPenalty(),
-		PresencePenalty:  s.GetPresencePenalty(),
+		MinP:             optionalPtr(s.MinP),
+		RepeatPenalty:    optionalPtr(s.RepeatPenalty),
+		FrequencyPenalty: optionalPtr(s.FrequencyPenalty),
+		PresencePenalty:  optionalPtr(s.PresencePenalty),
 		EnableThinking:   s.GetEnableThinking(),
 	}
 }

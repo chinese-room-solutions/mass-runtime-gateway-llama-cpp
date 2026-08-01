@@ -2,9 +2,9 @@ syntax = "proto3";
 
 package llama_cpp.v1;
 
-option go_package = "github.com/chinese-room-solutions/mass-runtime-llama-cpp/gen/go/llama_cpp/v1;llamacppv1";
+option go_package = "github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/gen/go/llama_cpp/v1;llamacppv1";
 
-// LlamaCppService is the typed inference API exposed by mass-runtime-llama-cpp.
+// LlamaCppService is the typed inference API exposed by mass-runtime-gateway-llama-cpp.
 //
 // The gateway hosts both this gRPC service and an OpenAI-compatible HTTP API.
 // MASS proxies both at /mass.llama-cpp/* paths — gRPC clients dial MASS over
@@ -13,40 +13,94 @@ option go_package = "github.com/chinese-room-solutions/mass-runtime-llama-cpp/ge
 // through the gateway's HandleRequest stream and are served by the same
 // internal scheduler/dispatch logic.
 //
-// Wire shapes mirror the gateway's existing typed JSON API 1:1 so HTTP and
-// gRPC clients see identical semantics. ConfigOverride is the per-request
-// hook that controls model load behavior; it shadows the OpenAI-compat shim
-// which has no equivalent.
+// Wire shapes mirror the gateway's typed HTTP API 1:1, including the
+// submit/fetch split: every inference call SUBMITS a job (returns a job_id)
+// and the result is read separately via GetResult. ConfigOverride is the
+// per-request hook that controls model load behavior; it shadows the
+// OpenAI-compat shim which has no equivalent.
+//
+// Submit/fetch model (same as typed HTTP POST + GET /Jobs/{id}):
+//   - Submit*(req) -> {job_id}. The job is durable the moment the id returns;
+//     dropping the Submit before it returns means it was never scheduled.
+//   - GetResult(job_id, wait) -> the typed result. wait=true blocks until the
+//     job is terminal; wait=false returns the current status (poll). This read
+//     is side-effect-free — dropping it never cancels the job.
+//   - CancelJob(job_id) is the only way to stop a running job.
+// ChatStream stays a live token stream for progressive output.
 service LlamaCppService {
-    // Chat is a one-shot chat completion. Returns the full assistant reply.
-    rpc Chat(ChatRequest) returns (ChatResponse);
+    // SubmitChat enqueues a chat completion and returns its job id.
+    rpc SubmitChat(ChatRequest) returns (SubmitResponse);
+
+    // SubmitBatchChat enqueues N chat completions as one job.
+    rpc SubmitBatchChat(BatchChatRequest) returns (SubmitResponse);
+
+    // SubmitEmbed enqueues a single-input embedding job.
+    rpc SubmitEmbed(EmbedRequest) returns (SubmitResponse);
+
+    // SubmitBatchEmbed enqueues a multi-input embedding job.
+    rpc SubmitBatchEmbed(BatchEmbedRequest) returns (SubmitResponse);
+
+    // SubmitTokenize enqueues a tokenize job (no inference).
+    rpc SubmitTokenize(TokenizeRequest) returns (SubmitResponse);
+
+    // GetResult reads a submitted job's result by id. wait=true blocks until
+    // terminal; wait=false returns the current status. Durable, read-only.
+    rpc GetResult(GetResultRequest) returns (JobResult);
+
+    // CancelJob cancels a submitted job (pending or running) by id.
+    rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
 
     // ChatStream returns the assistant reply as a server-streamed sequence
     // of incremental chunks (delta tokens), terminated by a final chunk
-    // carrying finish_reason + usage.
+    // carrying finish_reason + usage. The live-streaming alternative to
+    // SubmitChat + GetResult.
     rpc ChatStream(ChatRequest) returns (stream ChatChunk);
-
-    // BatchChat runs N independent chat completions against the same loaded
-    // model. Useful for low-overhead fan-out without N HTTP round trips.
-    rpc BatchChat(BatchChatRequest) returns (BatchChatResponse);
-
-    // Embed returns one embedding vector for one input.
-    rpc Embed(EmbedRequest) returns (EmbedResponse);
-
-    // BatchEmbed returns one vector per input.
-    rpc BatchEmbed(BatchEmbedRequest) returns (BatchEmbedResponse);
-
-    // Tokenize converts text into the model's token IDs (no inference).
-    rpc Tokenize(TokenizeRequest) returns (TokenizeResponse);
-
-    // LoadModel pre-warms a model on a worker without running inference.
-    // Returns once the model is resident on at least one worker.
-    rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
 
     // ListModels returns every gguf file MASS knows about. Identical to the
     // listing the typed HTTP /v1/Models endpoint returns; mirrored here so
     // gRPC clients can avoid an out-of-band HTTP call.
     rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+// SubmitResponse is the reply to every Submit*: just the durable job id. Read
+// the result via GetResult(job_id).
+message SubmitResponse {
+    string job_id = 1;
+}
+
+message GetResultRequest {
+    string job_id = 1;
+    bool wait = 2;      // true: block until terminal; false: return current status
+}
+
+message CancelJobRequest {
+    string job_id = 1;
+}
+
+message CancelJobResponse {}
+
+// JobStatus mirrors the lifecycle of a submitted job.
+enum JobStatus {
+    JOB_STATUS_UNSPECIFIED = 0;
+    JOB_STATUS_PENDING = 1;     // queued, not yet running
+    JOB_STATUS_PROCESSING = 2;  // running on a worker
+    JOB_STATUS_DONE = 3;        // finished; the matching result field is set
+    JOB_STATUS_ERROR = 4;       // failed; error is set
+}
+
+// JobResult is the self-describing result of any submitted job. status tells
+// the caller which result field (if any) is set; error carries the reason on
+// JOB_STATUS_ERROR.
+message JobResult {
+    JobStatus status = 1;
+    string error = 2;
+    oneof result {
+        ChatResponse chat = 3;
+        BatchChatResponse batch_chat = 4;
+        EmbedResponse embed = 5;
+        BatchEmbedResponse batch_embed = 6;
+        TokenizeResponse tokenize = 7;
+    }
 }
 
 // --- Shared types ---
@@ -93,17 +147,21 @@ message Message {
     repeated ContentPart parts = 3; // multimodal content
 }
 
+// Sampling: every numeric param is `optional` so presence is explicit.
+// ABSENT means "the client didn't say" and the worker applies its default;
+// PRESENT applies exactly as sent, including zero (temperature=0 → greedy,
+// seed=0 → deterministic seed 0).
 message Sampling {
     optional int32 max_tokens = 1;
-    float temperature = 2;
-    float top_p = 3;
-    int32 top_k = 4;
+    optional float temperature = 2;
+    optional float top_p = 3;
+    optional int32 top_k = 4;
     optional int32 seed = 5;
     repeated string stop = 6;
-    float min_p = 7;
-    float repeat_penalty = 8;
-    float frequency_penalty = 9;
-    float presence_penalty = 10;
+    optional float min_p = 7;
+    optional float repeat_penalty = 8;
+    optional float frequency_penalty = 9;
+    optional float presence_penalty = 10;
     bool enable_thinking = 11;
 }
 
@@ -118,11 +176,20 @@ message ConfigOverride {
     optional int32 threads = 5;
     optional int32 max_concurrent = 6;
     bool thinking = 7;
-    string main_gpu = 8;
-    repeated float tensor_split = 9;
+    // Tags 8-9 previously held job-level placement overrides
+    // (main_gpu + tensor_split). Removed alongside the upstream
+    // LoadHints fields: MASS is a fleet scheduler and operator-typed
+    // device-local indices have no consistent meaning across workers.
+    // Placement scoping happens via per-worker device enable/disable.
+    reserved 8, 9;
+    reserved "main_gpu", "tensor_split";
     string mmproj_filename = 10;    // basename only; lives in the same dir as model
     string chat_template = 11;
     CacheType cache_type = 12;
+    // VRAM headroom watermark (1-100). Forwarded to the worker as the
+    // grow-loop stop threshold; unset → worker uses its --vram-headroom-pct
+    // default.
+    optional int32 vram_headroom_pct = 13;
 }
 
 message Usage {
@@ -229,24 +296,6 @@ message TokenizeResponse {
 }
 
 // --- Load / list ---
-
-message LoadModelRequest {
-    string model = 1;
-    ConfigOverride model_config = 2;
-    LoadKind kind = 3;
-}
-
-enum LoadKind {
-    LOAD_KIND_UNSPECIFIED = 0;
-    LOAD_KIND_CHAT = 1;
-    LOAD_KIND_EMBEDDING = 2;
-}
-
-message LoadModelResponse {
-    string model_id = 1;        // gateway-internal model fingerprint
-    string worker_id = 2;       // worker that loaded it
-    int32 pool_size = 3;        // concurrent context capacity reported by worker
-}
 
 message ListModelsRequest {}
 

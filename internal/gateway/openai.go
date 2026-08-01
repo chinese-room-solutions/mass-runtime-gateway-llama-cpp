@@ -7,26 +7,29 @@ import (
 	"time"
 
 	llamacpp "github.com/chinese-room-solutions/mass-proto/gen/go/llama-cpp"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/model"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/payload"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/sched"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/model"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/payload"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/sched"
 	"github.com/google/uuid"
 )
 
 // ----- OpenAI request shapes -----
 
 type openAIChatRequest struct {
-	Model    string             `json:"model"`
+	Model    string              `json:"model"`
 	Messages []openAIChatMessage `json:"messages"`
-	Stream   bool               `json:"stream,omitempty"`
+	Stream   bool                `json:"stream,omitempty"`
 
-	Temperature      float32  `json:"temperature,omitempty"`
-	TopP             float32  `json:"top_p,omitempty"`
+	// Pointer fields keep JSON presence: omitted → absent on the wire
+	// (worker default), explicit zero → present zero (temperature:0 is
+	// greedy, seed:0 is a real seed).
+	Temperature      *float32 `json:"temperature,omitempty"`
+	TopP             *float32 `json:"top_p,omitempty"`
 	MaxTokens        *int32   `json:"max_tokens,omitempty"`
 	Stop             []string `json:"stop,omitempty"`
 	Seed             *int32   `json:"seed,omitempty"`
-	FrequencyPenalty float32  `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float32  `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float32 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float32 `json:"presence_penalty,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -64,10 +67,10 @@ type openAIEmbedRequest struct {
 }
 
 type openAIEmbedResponse struct {
-	Object string             `json:"object"`
-	Data   []openAIEmbedItem  `json:"data"`
-	Model  string             `json:"model"`
-	Usage  *openAIUsage       `json:"usage,omitempty"`
+	Object string            `json:"object"`
+	Data   []openAIEmbedItem `json:"data"`
+	Model  string            `json:"model"`
+	Usage  *openAIUsage      `json:"usage,omitempty"`
 }
 
 type openAIEmbedItem struct {
@@ -95,9 +98,9 @@ func (h *handlers) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	storePath := model.ResolveModelPath(req.Model)
-	if storePath == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("model: invalid path %q", req.Model))
+	storePath, err := h.resolveStorePath(req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	hints, files, err := h.buildLoadArtifacts(req.Model, nil, llamacpp.LoadKind_LOAD_KIND_CHAT)
@@ -128,11 +131,12 @@ func (h *handlers) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 			Stream: req.Stream,
 		}},
 	}
-	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
+	jobID, chunks, err := h.dispatchWithID(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	warnDecode := h.decodeWarner(jobID)
 
 	id := "chatcmpl-" + uuid.NewString()
 	created := time.Now().Unix()
@@ -144,34 +148,36 @@ func (h *handlers) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		for c := range chunks {
 			switch c.Type {
 			case sched.ChunkBody:
-				if dec, derr := payload.DecodeJobChunk(c.Chunk); derr == nil {
-					if delta := dec.GetChat(); delta != nil {
+				dec, derr := payload.DecodeJobChunk(c.Chunk)
+				if derr != nil {
+					warnDecode(derr)
+				} else if delta := dec.GetChat(); delta != nil {
+					frame := openAIChatResponse{
+						ID: id, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+						Choices: []openAIChoice{{
+							Index: 0,
+							Delta: &openAIChatMessage{Role: roleString(delta.GetRole()), Content: delta.GetContent()},
+						}},
+					}
+					b, _ := json.Marshal(frame)
+					writeSSE(w, string(b))
+				}
+			case sched.ChunkCompleted:
+				if len(c.Final) > 0 {
+					dec, derr := payload.DecodeJobChunk(c.Final)
+					if derr != nil {
+						warnDecode(derr)
+					} else if cf := dec.GetChatFinal(); cf != nil {
 						frame := openAIChatResponse{
 							ID: id, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 							Choices: []openAIChoice{{
-								Index: 0,
-								Delta: &openAIChatMessage{Role: roleString(delta.GetRole()), Content: delta.GetContent()},
+								Index:        0,
+								Delta:        &openAIChatMessage{},
+								FinishReason: finishReasonString(cf.GetFinishReason()),
 							}},
 						}
 						b, _ := json.Marshal(frame)
 						writeSSE(w, string(b))
-					}
-				}
-			case sched.ChunkCompleted:
-				if len(c.Final) > 0 {
-					if dec, derr := payload.DecodeJobChunk(c.Final); derr == nil {
-						if cf := dec.GetChatFinal(); cf != nil {
-							frame := openAIChatResponse{
-								ID: id, Object: "chat.completion.chunk", Created: created, Model: req.Model,
-								Choices: []openAIChoice{{
-									Index:        0,
-									Delta:        &openAIChatMessage{},
-									FinishReason: finishReasonString(cf.GetFinishReason()),
-								}},
-							}
-							b, _ := json.Marshal(frame)
-							writeSSE(w, string(b))
-						}
 					}
 				}
 				writeSSE(w, "[DONE]")
@@ -193,20 +199,21 @@ func (h *handlers) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	for c := range chunks {
 		if c.Type == sched.ChunkCompleted && len(c.Final) > 0 {
-			if dec, derr := payload.DecodeJobChunk(c.Final); derr == nil {
-				if cf := dec.GetChatFinal(); cf != nil {
-					if cf.GetMessage() != nil {
-						resp.Choices[0].Message = &openAIChatMessage{
-							Role:    roleString(cf.GetMessage().GetRole()),
-							Content: cf.GetMessage().GetContent(),
-						}
+			dec, derr := payload.DecodeJobChunk(c.Final)
+			if derr != nil {
+				warnDecode(derr)
+			} else if cf := dec.GetChatFinal(); cf != nil {
+				if cf.GetMessage() != nil {
+					resp.Choices[0].Message = &openAIChatMessage{
+						Role:    roleString(cf.GetMessage().GetRole()),
+						Content: cf.GetMessage().GetContent(),
 					}
-					resp.Choices[0].FinishReason = finishReasonString(cf.GetFinishReason())
-					if cf.GetUsage() != nil {
-						u := cf.GetUsage()
-						resp.Usage = &openAIUsage{
-							PromptTokens: u.GetPromptTokens(), CompletionTokens: u.GetCompletionTokens(), TotalTokens: u.GetTotalTokens(),
-						}
+				}
+				resp.Choices[0].FinishReason = finishReasonString(cf.GetFinishReason())
+				if cf.GetUsage() != nil {
+					u := cf.GetUsage()
+					resp.Usage = &openAIUsage{
+						PromptTokens: u.GetPromptTokens(), CompletionTokens: u.GetCompletionTokens(), TotalTokens: u.GetTotalTokens(),
 					}
 				}
 			}
@@ -225,9 +232,9 @@ func (h *handlers) handleOpenAIEmbed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	storePath := model.ResolveModelPath(req.Model)
-	if storePath == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("model: invalid path %q", req.Model))
+	storePath, err := h.resolveStorePath(req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	hints, files, err := h.buildLoadArtifacts(req.Model, nil, llamacpp.LoadKind_LOAD_KIND_EMBEDDING)
@@ -255,16 +262,20 @@ func (h *handlers) handleOpenAIEmbed(w http.ResponseWriter, r *http.Request) {
 			Body: &llamacpp.Job_BatchEmbed{BatchEmbed: &llamacpp.BatchEmbedJob{Inputs: inputs}},
 		}
 	}
-	chunks, err := h.dispatch(r.Context(), modelID, job, hints, files)
+	jobID, chunks, err := h.dispatchWithID(r.Context(), modelID, job, hints, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	warnDecode := h.decodeWarner(jobID)
 
 	resp := openAIEmbedResponse{Object: "list", Model: req.Model}
 	for c := range chunks {
 		if c.Type == sched.ChunkCompleted && len(c.Final) > 0 {
-			if dec, derr := payload.DecodeJobChunk(c.Final); derr == nil {
+			dec, derr := payload.DecodeJobChunk(c.Final)
+			if derr != nil {
+				warnDecode(derr)
+			} else {
 				if er := dec.GetEmbed(); er != nil {
 					resp.Data = []openAIEmbedItem{{Object: "embedding", Index: 0, Embedding: er.GetEmbedding()}}
 				}
@@ -323,48 +334,3 @@ func normaliseEmbedInput(in any) []string {
 	return nil
 }
 
-// ----- SSE chat frame helpers (typed-API streaming) -----
-
-func sseChatFrame(id, modelStr string, delta *llamacpp.ChatChunk, _ string) string {
-	frame := chatStreamFrame{
-		ID:    id,
-		Model: modelStr,
-		Delta: chatStreamDelta{
-			Role:             roleString(delta.GetRole()),
-			Content:          delta.GetContent(),
-			ReasoningContent: delta.GetReasoningContent(),
-		},
-	}
-	b, _ := json.Marshal(frame)
-	return string(b)
-}
-
-func sseChatFinalFrame(id, modelStr string, cf *llamacpp.ChatFinal) string {
-	frame := chatStreamFrame{
-		ID:           id,
-		Model:        modelStr,
-		FinishReason: finishReasonString(cf.GetFinishReason()),
-	}
-	if cf.GetUsage() != nil {
-		u := cf.GetUsage()
-		frame.Usage = &usage{PromptTokens: u.GetPromptTokens(), CompletionTokens: u.GetCompletionTokens(), TotalTokens: u.GetTotalTokens()}
-	}
-	frame.TokensPerSecond = cf.GetTokensPerSecond()
-	b, _ := json.Marshal(frame)
-	return string(b)
-}
-
-type chatStreamFrame struct {
-	ID              string          `json:"id"`
-	Model           string          `json:"model"`
-	Delta           chatStreamDelta `json:"delta,omitzero"`
-	FinishReason    string          `json:"finish_reason,omitempty"`
-	Usage           *usage          `json:"usage,omitempty"`
-	TokensPerSecond float64         `json:"tokens_per_second,omitempty"`
-}
-
-type chatStreamDelta struct {
-	Role             string `json:"role,omitempty"`
-	Content          string `json:"content,omitempty"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
-}

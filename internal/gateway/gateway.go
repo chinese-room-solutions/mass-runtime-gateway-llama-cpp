@@ -1,11 +1,9 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,9 +13,11 @@ import (
 
 	"github.com/KernelPryanic/ctxerr"
 	gatewaypb "github.com/chinese-room-solutions/mass-proto/gen/go/gateway"
-	llamacppv1 "github.com/chinese-room-solutions/mass-runtime-llama-cpp/gen/go/llama_cpp/v1"
-	"github.com/chinese-room-solutions/mass-runtime-llama-cpp/internal/sched"
+	llamacppv1 "github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/gen/go/llama_cpp/v1"
+	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/sched"
+	"github.com/chinese-room-solutions/mass-sdk/gatewayhttp"
 	hf "github.com/chinese-room-solutions/mass-sdk/huggingface"
+	"github.com/chinese-room-solutions/mass-sdk/uikit"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
@@ -60,9 +60,24 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 	if req.GetMassSchedulerBrokerId() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "init: mass_scheduler_broker_id is required")
 	}
+	// Refuse to start when MASS speaks a wire version the gateway
+	// wasn't built against. Gateway and MASS pin to the same constant
+	// today; mismatches mean one side is out of date.
+	if req.GetMassGatewayApiVersion() != gatewaypb.GatewayAPIVersion {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"gateway api version mismatch: MASS speaks %d, gateway built against %d",
+			req.GetMassGatewayApiVersion(), gatewaypb.GatewayAPIVersion)
+	}
 
 	if level, err := zerolog.ParseLevel(req.GetLogLevel()); err == nil && req.GetLogLevel() != "" {
 		zerolog.SetGlobalLevel(level)
+	}
+
+	// Load pluggable themes from the shared themes dir so the /install page
+	// (rendered inside a MASS iframe that passes ?theme=<name>) can resolve
+	// the same theme MASS selected. A bad theme file must not stop startup.
+	if err := uikit.LoadThemes(); err != nil {
+		g.logger.Warn().Err(err).Msg("loading pluggable uikit themes")
 	}
 
 	conn, err := g.broker.Dial(req.GetMassSchedulerBrokerId())
@@ -79,7 +94,7 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 	g.modelsDir = req.GetModelsDir()
 	g.schedConn = conn
 	g.scheduler = sched.NewClient(conn, g.logger)
-	g.cache = newMetadataCache(g.dataDir, g.logger)
+	g.cache = newMetadataCache(g.dataDir, g.modelsDir, g.logger)
 	deps := routerDeps{
 		params:      g.params,
 		runtimeName: g.params.RuntimeName,
@@ -97,20 +112,23 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 
 	_ = ctx
 	return &gatewaypb.InitResponse{
-		RuntimeName: g.params.RuntimeName,
-		Version:     g.params.Version,
-		DisplayName: g.params.DisplayName,
-		Description: "Runtime gateway for llama.cpp-family inference workers.",
+		RuntimeName:       g.params.RuntimeName,
+		Version:           g.params.Version,
+		DisplayName:       g.params.DisplayName,
+		Description:       g.params.Description,
+		GatewayApiVersion: gatewaypb.GatewayAPIVersion,
+		// Every llama-cpp worker is required to bench Q4_K matvec. MASS
+		// uses this axis as the fallback when a Submit names an axis the
+		// worker hasn't measured.
+		DefaultCostAxis: q4kMatvecAxis,
 	}, nil
 }
 
-// HandleRequest is the inbound HTTP-over-gRPC entrypoint. We reassemble the
-// streamed request frames into a normal http.Request, route it via our
-// http.ServeMux, and stream the response back as HTTPResponseChunk frames.
-//
-// The streaming response writer flushes whenever the caller writes (so SSE
-// chunks travel through immediately), which is what the OpenAI-compat
-// streaming chat path needs.
+// HandleRequest tunnels MASS's framed HTTP request into our router (or
+// our typed gRPC server, when the content-type signals gRPC). The
+// SDK's gatewayhttp.Serve owns the framing, body buffering, and
+// streaming response — including HTTP/2 trailer round-tripping for
+// gRPC.
 func (g *Gateway) HandleRequest(stream gatewaypb.RuntimeGateway_HandleRequestServer) error {
 	g.mu.RLock()
 	router := g.router
@@ -119,81 +137,34 @@ func (g *Gateway) HandleRequest(stream gatewaypb.RuntimeGateway_HandleRequestSer
 	if router == nil {
 		return status.Error(codes.FailedPrecondition, "gateway: HandleRequest called before Init")
 	}
-
-	first, err := stream.Recv()
-	if err != nil {
-		return ctxerr.With(fmt.Errorf("receiving first request chunk: %w", err), nil)
-	}
-	if first.GetMethod() == "" || first.GetPath() == "" {
-		return status.Error(codes.InvalidArgument, "first chunk must carry method + path")
-	}
-
-	body, bodyErr := assembleRequestBody(stream, first)
-	if bodyErr != nil {
-		return bodyErr
-	}
-
-	// MASS strips its `/mass.<runtime_name>` prefix and forwards the rest
-	// verbatim, so the path arrives as ".v1/Foo" (leading dot, no slash).
-	// http.NewRequestWithContext parses that as a relative URL, which the
-	// mux can't dispatch and falls through to its trailing-slash redirect.
-	// Force a leading "/" so the mux sees an absolute path it can route on.
-	reqPath := first.Path
-	if reqPath == "" || reqPath[0] != '/' {
-		reqPath = "/" + reqPath
-	}
-	httpReq, err := http.NewRequestWithContext(stream.Context(), first.Method, reqPath, body)
-	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "constructing http request: %v", err)
-	}
-	for k, v := range first.GetHeaders() {
-		httpReq.Header.Set(k, v)
-	}
-
-	rw := newStreamResponseWriter(stream)
-	if isGRPCRequest(httpReq) && grpcSrv != nil {
-		// gRPC requires HTTP/2; the reconstructed request defaults to 1.1.
-		// Forging the proto fields satisfies grpc.Server.ServeHTTP's check
-		// without us running an actual h2 connection — the body has already
-		// been buffered, and our streamResponseWriter implements http.Flusher,
-		// which is all the server-handler transport needs.
-		httpReq.ProtoMajor = 2
-		httpReq.ProtoMinor = 0
-		httpReq.Proto = "HTTP/2.0"
-		grpcSrv.ServeHTTP(rw, httpReq)
-	} else {
-		router.ServeHTTP(rw, httpReq)
-	}
-	return rw.Finish()
+	return gatewayhttp.Serve(stream, router, grpcSrv)
 }
 
-// isGRPCRequest reports whether the inbound HTTP request looks like a gRPC
-// call (per the application/grpc* content-type convention). gRPC also
-// constrains method=POST, but we leave that to the gRPC server's own
-// validation so non-POST gRPC paths get a proper gRPC error rather than
-// silently falling through to the HTTP router.
-func isGRPCRequest(r *http.Request) bool {
-	ct := r.Header.Get("Content-Type")
-	return strings.HasPrefix(ct, "application/grpc")
+// snapshot returns the Init-populated state every model RPC depends
+// on. ok=false until Init has run — callers must translate that to
+// FailedPrecondition instead of dereferencing a nil cache / racing an
+// in-flight Init.
+func (g *Gateway) snapshot() (modelsDir string, cache *metadataCache, ok bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.modelsDir, g.cache, g.modelsDir != "" && g.cache != nil
 }
 
-// ListGroups is the gateway's authoritative, fully-grouped catalogue.
-// It walks <modelsDir>/gguf/, parses every recognised file (caching per
-// (path, mtime, size) so repeat calls are cheap), and returns one
-// [gatewaypb.Group] per operator-typed group name; each Group holds
-// its child [gatewaypb.Model] files (different quants, mmproj
-// companions, etc.).
-//
-// Grouping is a runtime concern — MASS receives the groups as-is and
-// renders them.
+// errNotInitialised is the FailedPrecondition every model RPC returns
+// when called before Init has populated the gateway's state.
+func errNotInitialised(rpc string) error {
+	return status.Errorf(codes.FailedPrecondition, "%s: gateway not initialised (Init not run)", rpc)
+}
+
+// ListGroups returns the gateway's catalogue: walks <modelsDir>/gguf/,
+// parses recognised files (cache key: path, mtime, size), and returns
+// one [gatewaypb.Group] per operator-typed group name. Grouping is
+// runtime-private — MASS just renders.
 func (g *Gateway) ListGroups(ctx context.Context, _ *gatewaypb.GatewayListGroupsRequest) (*gatewaypb.GatewayListGroupsResponse, error) {
 	_ = ctx
-	g.mu.RLock()
-	dir := g.modelsDir
-	cache := g.cache
-	g.mu.RUnlock()
-	if dir == "" || cache == nil {
-		return nil, status.Error(codes.FailedPrecondition, "list_groups: models_dir not set (Init not run?)")
+	dir, cache, ok := g.snapshot()
+	if !ok {
+		return nil, errNotInitialised("list_groups")
 	}
 
 	root := formatRoot(dir)
@@ -204,34 +175,23 @@ func (g *Gateway) ListGroups(ctx context.Context, _ *gatewaypb.GatewayListGroups
 	return &gatewaypb.GatewayListGroupsResponse{Groups: groupModels(infos)}, nil
 }
 
-// PlanModelFiles maps an install request to the concrete file set
-// MASS must fetch. For HuggingFace + GGUF: the requested file plus,
-// when the repo also ships an mmproj projector, that companion file.
-// The gateway hits the HF tree API once to size the files and detect
-// the companion; MASS does the actual downloads.
+// planHFInstall resolves an HF install pick into primary + mmproj
+// companion (when present) and reserves both destination paths in the
+// catalogue so a concurrent walk doesn't drop them as orphans
+// pre-download. Called from handlers.go::handleInstallSubmit, shipped
+// to MASS via MassScheduler.DownloadFiles.
 //
-// group_name is the operator-typed identifier (required) — every
-// file produced by this plan gets that name stamped into the
-// catalogue, so re-installs of related files (different quants, the
-// projector, etc.) under the same name cluster into one Group.
-//
-// The mmproj-by-filename companion match is a pre-download bundling
-// heuristic — the only signal available before bytes land. The
-// projector's own GGUF header (architecture=clip) confirms its role
-// at walk time.
-func (g *Gateway) PlanModelFiles(ctx context.Context, req *gatewaypb.PlanModelFilesRequest) (*gatewaypb.PlanModelFilesResponse, error) {
-	source := req.GetSource()
-	if source != "huggingface" {
-		return nil, status.Error(codes.InvalidArgument, "plan_model_files: only source=\"huggingface\" is supported by llama-cpp")
-	}
-	repoID := strings.TrimSpace(req.GetRepoId())
-	filename := strings.TrimSpace(req.GetFilename())
-	groupName := strings.TrimSpace(req.GetGroupName())
+// Companion is matched by filename pre-download (only signal available);
+// the projector's GGUF header (architecture=clip) confirms at walk time.
+func planHFInstall(ctx context.Context, modelsDir string, cache *metadataCache, repoID, filename, groupName string) ([]*gatewaypb.DownloadFile, error) {
+	repoID = strings.TrimSpace(repoID)
+	filename = strings.TrimSpace(filename)
+	groupName = strings.TrimSpace(groupName)
 	if repoID == "" || filename == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_model_files: repo_id and filename are required")
+		return nil, fmt.Errorf("repo_id and filename are required")
 	}
 	if groupName == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_model_files: group_name is required (it becomes the group's display label and clusters files under one Group)")
+		return nil, fmt.Errorf("group_name is required")
 	}
 
 	files, err := hf.ListFiles(ctx, repoID, []string{".gguf"})
@@ -239,36 +199,30 @@ func (g *Gateway) PlanModelFiles(ctx context.Context, req *gatewaypb.PlanModelFi
 		return nil, ctxerr.With(fmt.Errorf("listing HF files: %w", err), map[string]any{"repo_id": repoID})
 	}
 
-	primaryIsProjector := looksLikeMmprojFilename(filename)
-
 	var primarySize int64 = -1
-	var mmprojName string
-	var mmprojSize int64 = -1
 	for _, f := range files {
 		if f.Filename == filename {
 			primarySize = f.SizeBytes
-			continue
+			break
 		}
-		// Only auto-attach an mmproj companion when the user picked a
-		// non-projector primary. Picking the projector itself is an
-		// explicit single-file install and shouldn't pull siblings.
-		if primaryIsProjector || mmprojName != "" {
-			continue
-		}
-		if looksLikeMmprojFilename(f.Filename) {
-			mmprojName = f.Filename
-			mmprojSize = f.SizeBytes
-		}
+	}
+
+	// Only auto-attach an mmproj companion when the user picked a
+	// non-projector primary. Picking the projector itself is an
+	// explicit single-file install and shouldn't pull siblings.
+	var mmprojName string
+	var mmprojSize int64 = -1
+	if !looksLikeMmprojFilename(filename) {
+		mmprojName, mmprojSize = pickMmprojCompanion(files, filename)
 	}
 	if primarySize < 0 {
 		return nil, ctxerr.With(fmt.Errorf("file %q not found in repo %q", filename, repoID), map[string]any{"repo_id": repoID, "filename": filename})
 	}
 
-	primaryDest := planDestPath(g, groupName, filename)
-	if err := assertDestNotTaken(g.modelsDir, primaryDest); err != nil {
-		return nil, err
+	primaryDest := cache.groupRelPath(groupName, filename)
+	if err := cache.reserveEntry(filepath.Join(modelsDir, primaryDest), groupName); err != nil {
+		return nil, reserveErrToStatus(err)
 	}
-	g.cache.reserveEntry(filepath.Join(g.modelsDir, primaryDest), groupName)
 
 	out := []*gatewaypb.DownloadFile{
 		{
@@ -279,11 +233,10 @@ func (g *Gateway) PlanModelFiles(ctx context.Context, req *gatewaypb.PlanModelFi
 		},
 	}
 	if mmprojName != "" {
-		mmprojDest := planDestPath(g, groupName, mmprojName)
-		if err := assertDestNotTaken(g.modelsDir, mmprojDest); err != nil {
-			return nil, err
+		mmprojDest := cache.groupRelPath(groupName, mmprojName)
+		if err := cache.reserveEntry(filepath.Join(modelsDir, mmprojDest), groupName); err != nil {
+			return nil, reserveErrToStatus(err)
 		}
-		g.cache.reserveEntry(filepath.Join(g.modelsDir, mmprojDest), groupName)
 		out = append(out, &gatewaypb.DownloadFile{
 			Url:        hfFileURL(repoID, mmprojName),
 			RelPath:    mmprojDest,
@@ -291,7 +244,7 @@ func (g *Gateway) PlanModelFiles(ctx context.Context, req *gatewaypb.PlanModelFi
 			GroupLabel: groupName,
 		})
 	}
-	return &gatewaypb.PlanModelFilesResponse{Files: out}, nil
+	return out, nil
 }
 
 // PlanLocalImport plans a Browse Local install. The operator picks
@@ -303,6 +256,10 @@ func (g *Gateway) PlanModelFiles(ctx context.Context, req *gatewaypb.PlanModelFi
 // Returns codes.InvalidArgument when src_path or group_name is empty.
 // Returns codes.AlreadyExists when the destination filename collides.
 func (g *Gateway) PlanLocalImport(_ context.Context, req *gatewaypb.PlanLocalImportRequest) (*gatewaypb.PlanLocalImportResponse, error) {
+	modelsDir, cache, ok := g.snapshot()
+	if !ok {
+		return nil, errNotInitialised("plan_local_import")
+	}
 	src := strings.TrimSpace(req.GetSrcPath())
 	if src == "" {
 		return nil, status.Error(codes.InvalidArgument, "plan_local_import: src_path is required")
@@ -315,11 +272,10 @@ func (g *Gateway) PlanLocalImport(_ context.Context, req *gatewaypb.PlanLocalImp
 		return nil, status.Errorf(codes.NotFound, "plan_local_import: %s is not a GGUF file", filepath.Base(src))
 	}
 
-	dest := planDestPath(g, groupName, src)
-	if err := assertDestNotTaken(g.modelsDir, dest); err != nil {
-		return nil, err
+	dest := cache.groupRelPath(groupName, src)
+	if err := cache.reserveEntry(filepath.Join(modelsDir, dest), groupName); err != nil {
+		return nil, reserveErrToStatus(err)
 	}
-	g.cache.reserveEntry(filepath.Join(g.modelsDir, dest), groupName)
 
 	size := int64(-1)
 	if st, err := os.Stat(src); err == nil {
@@ -335,35 +291,211 @@ func (g *Gateway) PlanLocalImport(_ context.Context, req *gatewaypb.PlanLocalImp
 	}, nil
 }
 
-// RenameGroup atomically rewrites every catalogue entry whose Name
-// matches id to use new_name. The id MASS holds is the slug of the
-// current Name (see groupModels); we resolve it back to the source
-// Name by scanning the catalogue. Returns NotFound when no entry
-// matches the slug.
+// PlanRemoteImport plans an HF install: it resolves repo+filename into the
+// primary plus any mmproj companion the gateway recognises, and returns the
+// [DownloadFile] list MASS fetches under models_dir. Pure decision — the
+// gateway never downloads. Mirrors PlanLocalImport for the remote case and
+// reuses the same resolver as the operator install UI.
+func (g *Gateway) PlanRemoteImport(ctx context.Context, req *gatewaypb.PlanRemoteImportRequest) (*gatewaypb.PlanRemoteImportResponse, error) {
+	modelsDir, cache, ok := g.snapshot()
+	if !ok {
+		return nil, errNotInitialised("plan_remote_import")
+	}
+	files, err := planHFInstall(ctx, modelsDir, cache, req.GetRepoId(), req.GetFilename(), req.GetGroupName())
+	if err != nil {
+		// planHFInstall already returns a gRPC status (e.g. AlreadyExists
+		// when the destination is taken) for the cases callers act on;
+		// pass those through and default the rest to InvalidArgument.
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
+		return nil, status.Errorf(codes.InvalidArgument, "plan_remote_import: %v", err)
+	}
+	return &gatewaypb.PlanRemoteImportResponse{Files: files}, nil
+}
+
+// PlanDelete resolves a model id (Group.id slug) to the store-relative files
+// that constitute it — the primary plus any companions sharing its Name. The
+// gateway only decides; MASS removes the files and the next catalogue walk
+// prunes the entries. Returns NotFound when no group matches id.
+//
+// Residency is enforced before the plan is handed back: if any loaded
+// instance backed by a doomed file is still serving (active > 0) the
+// delete is refused with FailedPrecondition — removing bytes out from
+// under in-flight requests would fail them. Idle residents are evicted
+// (via MASS) so no worker keeps an OS lock on files about to vanish.
+func (g *Gateway) PlanDelete(ctx context.Context, req *gatewaypb.PlanDeleteRequest) (*gatewaypb.PlanDeleteResponse, error) {
+	_, cache, ok := g.snapshot()
+	if !ok {
+		return nil, errNotInitialised("plan_delete")
+	}
+	id := strings.TrimSpace(req.GetId())
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "plan_delete: id is required")
+	}
+	relPaths := cache.relPathsForModel(id)
+	if len(relPaths) == 0 {
+		// Delete is idempotent: a group's variants are deleted one id at a
+		// time, but the first delete removes every file sharing the Name
+		// (primary + companions), so the later ids resolve to nothing. A
+		// published-id-shaped target that's already gone is a no-op success,
+		// not a failure; only a malformed id is NotFound.
+		if isPublishedID(id) {
+			return &gatewaypb.PlanDeleteResponse{}, nil
+		}
+		return nil, status.Errorf(codes.NotFound, "plan_delete: no model matches id %q", id)
+	}
+	if err := g.evictLoadedInstances(ctx, relPaths); err != nil {
+		return nil, err
+	}
+	return &gatewaypb.PlanDeleteResponse{RelPaths: relPaths}, nil
+}
+
+// evictLoadedInstances refuses the delete if any instance backed by
+// relPaths is serving, then evicts the idle ones via MASS before the
+// files are removed. relPaths are FULL store-relative keys (with the
+// runtime-owned first segment, "gguf/…").
+//
+// Returns FailedPrecondition when a matching instance has active jobs.
+// Eviction of idle instances is best-effort: failures are logged and the
+// plan proceeds — MASS's file removal surfaces its own error if a worker
+// still holds the file open. A nil scheduler (not yet wired) skips both.
+func (g *Gateway) evictLoadedInstances(ctx context.Context, relPaths []string) error {
+	g.mu.RLock()
+	scheduler := g.scheduler
+	g.mu.RUnlock()
+	if scheduler == nil {
+		return nil
+	}
+	workers, err := scheduler.ListWorkers(ctx)
+	if err != nil {
+		g.logger.Warn().Err(err).Msg("listing workers before delete; skipping eviction")
+		return nil
+	}
+	instances := loadedInstancesForRelPaths(workers, relPaths)
+	var active int32
+	for _, in := range instances {
+		active += in.active
+	}
+	if active > 0 {
+		return status.Errorf(codes.FailedPrecondition, "plan_delete: model is serving %d active job(s); cancel or wait for them before deleting", active)
+	}
+	for _, in := range instances {
+		n, err := scheduler.EvictModel(ctx, in.modelID, "")
+		if err != nil {
+			g.logger.Warn().Err(err).Str("model_id", in.modelID).Msg("evicting loaded model before delete")
+			continue
+		}
+		g.logger.Info().Str("model_id", in.modelID).Int32("evicted", n).Msg("evicted loaded model before delete")
+	}
+	return nil
+}
+
+// loadedInstance is one loaded model instance matched to a doomed group:
+// its opaque model_id (used to evict) and its in-flight job count (used
+// to refuse deletes that would fail active requests).
+type loadedInstance struct {
+	modelID string
+	active  int32
+}
+
+// loadedInstancesForRelPaths returns the distinct loaded instances whose
+// backing files are among relPaths (FULL store-relative keys). Matching
+// is files-first: a worker reports LoadedModelStatus.files — the same
+// store-relative cache keys as ModelFile.filename / relPaths — so a
+// doomed path matches a loaded model when it equals a reported file OR
+// sits under one (or vice versa), honouring the dir-subtree contract
+// where a files entry may denote a directory root.
+//
+// Only when a worker reports NO files for an instance (an older worker,
+// or one that hasn't populated the field) do we fall back to parsing the
+// model_id's relpath prefix. That relpath is the request-facing model
+// string, which omits the runtime-owned first segment, so relPaths are
+// stripped of formatDir before comparing.
+func loadedInstancesForRelPaths(workers []*gatewaypb.WorkerSummary, relPaths []string) []loadedInstance {
+	fallbackWant := make(map[string]struct{}, len(relPaths))
+	for _, p := range relPaths {
+		fallbackWant[strings.TrimPrefix(p, formatDir+"/")] = struct{}{}
+	}
+	var out []loadedInstance
+	seen := map[string]struct{}{}
+	for _, w := range workers {
+		for _, lm := range w.GetLoadedModels() {
+			id := lm.GetModelId()
+			files := lm.GetFiles()
+			var hit bool
+			if len(files) > 0 {
+				hit = anyPathMatches(relPaths, files)
+			} else {
+				rel, _, _ := strings.Cut(id, "#")
+				_, hit = fallbackWant[rel]
+			}
+			if !hit {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, loadedInstance{modelID: id, active: lm.GetActive()})
+		}
+	}
+	return out
+}
+
+// anyPathMatches reports whether any doomed path overlaps any backing
+// file under the dir-subtree contract: two forward-slash store keys
+// overlap when they are equal or one is a directory ancestor of the
+// other (prefix + "/"). Either side may be the subtree root.
+func anyPathMatches(relPaths, files []string) bool {
+	for _, rp := range relPaths {
+		for _, f := range files {
+			if rp == f ||
+				strings.HasPrefix(f, rp+"/") ||
+				strings.HasPrefix(rp, f+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RenameGroup retags every catalogue entry whose Name slug matches id
+// with new_name. Returns NotFound when no entry matches.
+//
+// Rename is catalogue-only: files never move, so loaded workers and
+// in-flight jobs (keyed on the physical store path) are unaffected.
+// Published model ids re-derive from the new name on the next list;
+// ids handed out before the rename keep resolving through
+// storePathForID.
 func (g *Gateway) RenameGroup(_ context.Context, req *gatewaypb.RenameGroupRequest) (*gatewaypb.RenameGroupResponse, error) {
+	_, cache, ok := g.snapshot()
+	if !ok {
+		return nil, errNotInitialised("rename_group")
+	}
 	id := strings.TrimSpace(req.GetId())
 	newName := strings.TrimSpace(req.GetNewName())
 	if id == "" || newName == "" {
 		return nil, status.Error(codes.InvalidArgument, "rename_group: id and new_name are required")
 	}
-	old := g.cache.nameForSlug(id)
+	old := cache.nameForSlug(id)
 	if old == "" {
 		return nil, status.Errorf(codes.NotFound, "rename_group: no group matches id %q", id)
 	}
 	if old == newName {
 		return &gatewaypb.RenameGroupResponse{}, nil
 	}
-	n, err := g.cache.renameGroup(g.modelsDir, old, newName)
+	n, err := cache.renameGroup(old, newName)
 	if err != nil {
-		if errors.Is(err, errEntryReserved) {
-			return nil, status.Errorf(codes.FailedPrecondition, "rename_group: %v", err)
+		if errors.Is(err, errNameNotSluggable) || errors.Is(err, errSlugCollision) {
+			return nil, reserveErrToStatus(err)
 		}
 		return nil, ctxerr.With(fmt.Errorf("renaming group %q → %q: %w", old, newName, err), map[string]any{"old": old, "new": newName})
 	}
 	if n == 0 {
 		return nil, status.Errorf(codes.NotFound, "rename_group: no entries renamed for %q", old)
 	}
-	g.cache.saveToDisk()
+	cache.saveToDisk()
 	g.logger.Info().Str("old", old).Str("new", newName).Int("entries", n).Msg("renamed group")
 	return &gatewaypb.RenameGroupResponse{}, nil
 }
@@ -387,50 +519,72 @@ func sanitiseFilename(name string) string {
 	return strings.Trim(b.String(), " .-")
 }
 
-// planDestPath returns the under-modelsDir relPath where a source
-// file should land. Layout: "<formatDir>/<group-slug>/<sanitised
-// source basename>". The per-group subdirectory mirrors the Models
-// tab grouping on disk so the catalogue and the filesystem agree on
-// "this file belongs to that group" without operator inspection.
-func planDestPath(_ *Gateway, groupName, srcName string) string {
-	return filepath.ToSlash(filepath.Join(formatDir, modelSlug(groupName), sanitiseFilename(filepath.Base(srcName))))
-}
-
-// assertDestNotTaken returns codes.AlreadyExists when a file already
-// occupies the target relPath under modelsDir. Caller (PlanModelFiles /
-// PlanLocalImport) surfaces the error to the operator instead of
-// silently overwriting.
-func assertDestNotTaken(modelsDir, relPath string) error {
-	if _, err := os.Stat(filepath.Join(modelsDir, relPath)); err == nil {
-		return status.Errorf(codes.AlreadyExists, "destination already taken: %s", relPath)
+// reserveErrToStatus maps reserveEntry/renameGroup identity failures
+// to the gRPC codes MASS surfaces to the operator: a name that can't
+// slug at all is a bad argument; a slug collision or an occupied
+// destination conflicts with existing state. Anything else passes
+// through unchanged.
+func reserveErrToStatus(err error) error {
+	switch {
+	case errors.Is(err, errNameNotSluggable):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, errSlugCollision), errors.Is(err, errDestTaken):
+		return status.Error(codes.AlreadyExists, err.Error())
+	default:
+		return err
 	}
-	return nil
 }
 
-// hfFileURL is the canonical resolve URL for a file in a HuggingFace repo.
+// hfFileURL is the canonical resolve URL for a file in a HuggingFace
+// repo. filename may live in a subfolder, so each path segment is
+// escaped separately — escaping the whole string would turn the "/"
+// separators into %2F and break the resolve path.
 func hfFileURL(repoID, filename string) string {
-	return "https://huggingface.co/" + repoID + "/resolve/main/" + url.PathEscape(filename)
+	segments := strings.Split(filename, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return "https://huggingface.co/" + repoID + "/resolve/main/" + strings.Join(segments, "/")
 }
 
-// looksLikeMmprojFilename is the pre-download heuristic for spotting
-// a mmproj projector by community-convention filename. Used only by
-// PlanModelFiles for HF companion bundling and by FilterFilenames to
-// hide projectors from the picker — both run before any header is
-// available. Identity (catalogue Name) is operator-typed; this is
-// purely a fetch-time bundling hint.
+// pickMmprojCompanion selects the mmproj sibling to bundle with a
+// non-projector primary. Repos often ship several precisions
+// (mmproj-*-f16 and mmproj-*-f32), and the API's listing order isn't a
+// contract — prefer the f16 variant deterministically and fall back to
+// the first candidate when no f16 variant exists.
+func pickMmprojCompanion(files []hf.GGUFFile, primary string) (string, int64) {
+	name := ""
+	var size int64 = -1
+	for _, f := range files {
+		if f.Filename == primary || !looksLikeMmprojFilename(f.Filename) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(f.Filename), "f16") {
+			return f.Filename, f.SizeBytes
+		}
+		if name == "" {
+			name = f.Filename
+			size = f.SizeBytes
+		}
+	}
+	return name, size
+}
+
+// looksLikeMmprojFilename is the pre-download filename heuristic for
+// spotting a projector. Used by PlanModelFiles + FilterFilenames where
+// no header is available yet; identity is operator-typed, this is only
+// a fetch-time bundling hint.
 func looksLikeMmprojFilename(name string) bool {
 	lower := strings.ToLower(name)
 	return strings.Contains(lower, "mmproj") && strings.HasSuffix(lower, ".gguf")
 }
 
-// capabilitiesFromHeader derives the gateway's Capabilities flags
-// from header signals only. Vision is determined at walk time by
-// scanning for a sibling projector under the same Name (the primary's
-// own header doesn't say "I have vision"). Audio: not currently
-// inferable from llama.cpp GGUFs; left false. Thinking: chat template
-// substring detection — gated on the file actually being a chat
-// model, since some embedding models (Qwen3-Embedding) also ship a
-// chat template containing think tokens but don't emit reasoning.
+// capabilitiesFromHeader derives Capabilities from header signals only.
+// Vision is set at walk time by sibling-projector lookup (primary's
+// own header doesn't expose it). Audio: not inferable from llama.cpp
+// GGUFs. Thinking: chat-template substring, gated on model_type=chat
+// because some embedding models (Qwen3-Embedding) ship think-token
+// chat templates but don't emit reasoning.
 func capabilitiesFromHeader(kv map[string]string) *gatewaypb.Capabilities {
 	thinking := strings.EqualFold(kv["thinking"], "true") && modelTypeFromHeader(kv) == "chat"
 	return &gatewaypb.Capabilities{
@@ -438,16 +592,11 @@ func capabilitiesFromHeader(kv map[string]string) *gatewaypb.Capabilities {
 	}
 }
 
-// modelTypeFromHeader distinguishes chat from embedding. Projectors
-// (clip architecture) return "" — not a standalone model_type.
-//
-// Signal priority: <arch>.pooling_type wins because some embedding
-// models (Qwen3-Embedding, etc.) also ship a chat template, which
-// makes template-presence alone misclassify them as chat. Pooling
-// type is set by embedding models and unset by chat models.
-//
-// Fallback to chat-template presence for older / loosely-tagged
-// GGUFs that don't declare pooling_type.
+// modelTypeFromHeader distinguishes chat vs embedding. clip arch
+// returns "" (not standalone). pooling_type wins — some embedding
+// models (Qwen3-Embedding) ship a chat template, so template-presence
+// alone misclassifies them. Falls back to chat_template_present for
+// loosely-tagged older GGUFs.
 func modelTypeFromHeader(kv map[string]string) string {
 	if strings.EqualFold(kv["architecture"], "clip") {
 		return ""
@@ -505,194 +654,8 @@ func propertiesFromKV(kv map[string]string) map[string]string {
 	}
 	return out
 }
+
 // ----- Helpers -----
-
-// assembleRequestBody collects the body bytes from the streamed first frame
-// + subsequent frames into a single io.ReadCloser. We buffer the body fully
-// before invoking the HTTP handler — chat / embed / tokenize requests are
-// small (a few KB usually). If we ever need to stream uploads we'll switch
-// to a goroutine-fed pipe; not worth the complexity today.
-func assembleRequestBody(stream gatewaypb.RuntimeGateway_HandleRequestServer, first *gatewaypb.HTTPRequestChunk) (io.ReadCloser, error) {
-	var buf bytes.Buffer
-	if len(first.GetBody()) > 0 {
-		buf.Write(first.GetBody())
-	}
-	if first.GetEndOfStream() {
-		return io.NopCloser(&buf), nil
-	}
-	for {
-		chunk, err := stream.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return io.NopCloser(&buf), nil
-			}
-			return nil, ctxerr.With(fmt.Errorf("receiving request body chunk: %w", err), nil)
-		}
-		if len(chunk.GetBody()) > 0 {
-			buf.Write(chunk.GetBody())
-		}
-		if chunk.GetEndOfStream() {
-			return io.NopCloser(&buf), nil
-		}
-	}
-}
-
-// streamResponseWriter is an http.ResponseWriter that streams writes back as
-// HTTPResponseChunk frames. The first Write (or first WriteHeader) flushes
-// the status + headers. Subsequent writes are body frames; close emits the
-// terminal end-of-stream marker.
-type streamResponseWriter struct {
-	stream      gatewaypb.RuntimeGateway_HandleRequestServer
-	header      http.Header
-	status      int
-	wroteHeader bool
-	finished    bool
-	finishErr   error
-}
-
-func newStreamResponseWriter(stream gatewaypb.RuntimeGateway_HandleRequestServer) *streamResponseWriter {
-	return &streamResponseWriter{stream: stream, header: http.Header{}}
-}
-
-func (w *streamResponseWriter) Header() http.Header { return w.header }
-
-func (w *streamResponseWriter) WriteHeader(status int) {
-	if w.wroteHeader {
-		return
-	}
-	w.status = status
-	w.wroteHeader = true
-	headers := flattenResponseHeaders(w.header)
-	if err := w.stream.Send(&gatewaypb.HTTPResponseChunk{
-		Status:  int32(status),
-		Headers: headers,
-	}); err != nil {
-		w.finishErr = err
-	}
-}
-
-func (w *streamResponseWriter) Write(p []byte) (int, error) {
-	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.finishErr != nil {
-		return 0, w.finishErr
-	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if err := w.stream.Send(&gatewaypb.HTTPResponseChunk{Body: p}); err != nil {
-		w.finishErr = err
-		return 0, err
-	}
-	return len(p), nil
-}
-
-// Flush is called by handlers using SSE/streaming responses. We always send
-// every Write immediately, so this is a no-op besides confirming we
-// implement http.Flusher.
-func (w *streamResponseWriter) Flush() {}
-
-// Finish emits the terminal end-of-stream frame, attaching any trailers the
-// handler wrote (either via `Trailer:` pre-declaration or via the
-// http.TrailerPrefix late-write convention). Called by HandleRequest after
-// the handler returns.
-//
-// Trailers matter for gRPC: the in-process gRPC server emits grpc-status /
-// grpc-message as HTTP/2 trailers; without them the client sees a hung RPC.
-func (w *streamResponseWriter) Finish() error {
-	if w.finished {
-		return w.finishErr
-	}
-	w.finished = true
-	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.finishErr != nil {
-		return w.finishErr
-	}
-	trailers := extractTrailers(w.header)
-	if err := w.stream.Send(&gatewaypb.HTTPResponseChunk{
-		EndOfStream: true,
-		Trailers:    trailers,
-	}); err != nil {
-		return ctxerr.With(fmt.Errorf("sending EOS: %w", err), nil)
-	}
-	return nil
-}
-
-// extractTrailers harvests trailer entries from an http.Header per net/http's
-// two trailer conventions:
-//
-//   - Pre-declared trailers: keys listed in the comma-separated "Trailer"
-//     header before WriteHeader. Their final values live under those keys
-//     directly in w.Header() after the handler returns.
-//   - Late trailers: values written under the http.TrailerPrefix
-//     ("Trailer:") magic prefix. The prefix is stripped here.
-//
-// Returns nil when no trailers exist (so plain HTTP responses get an empty
-// frame field, matching the proto's "empty for plain HTTP" doc).
-func extractTrailers(h http.Header) map[string]string {
-	var out map[string]string
-	put := func(key string, vs []string) {
-		if len(vs) == 0 {
-			return
-		}
-		if out == nil {
-			out = make(map[string]string)
-		}
-		out[key] = strings.Join(vs, ",")
-	}
-	if announced := h.Get("Trailer"); announced != "" {
-		for _, k := range strings.Split(announced, ",") {
-			k = http.CanonicalHeaderKey(strings.TrimSpace(k))
-			if k == "" {
-				continue
-			}
-			put(k, h.Values(k))
-		}
-	}
-	for k, vs := range h {
-		if !strings.HasPrefix(k, http.TrailerPrefix) {
-			continue
-		}
-		put(strings.TrimPrefix(k, http.TrailerPrefix), vs)
-	}
-	return out
-}
-
-// Compile-time assertions.
-var (
-	_ http.ResponseWriter = (*streamResponseWriter)(nil)
-	_ http.Flusher        = (*streamResponseWriter)(nil)
-)
-
-// flattenResponseHeaders flattens the response header map for the initial
-// HTTPResponseChunk. Trailer entries are excluded — late-bound values written
-// under http.TrailerPrefix and any names listed in the announced "Trailer"
-// header are sent separately on the EndOfStream chunk.
-func flattenResponseHeaders(in http.Header) map[string]string {
-	announced := make(map[string]struct{})
-	if v := in.Get("Trailer"); v != "" {
-		for _, k := range strings.Split(v, ",") {
-			k = http.CanonicalHeaderKey(strings.TrimSpace(k))
-			if k != "" {
-				announced[k] = struct{}{}
-			}
-		}
-	}
-	out := make(map[string]string, len(in))
-	for k, vs := range in {
-		if strings.HasPrefix(k, http.TrailerPrefix) {
-			continue
-		}
-		if _, isTrailer := announced[k]; isTrailer {
-			continue
-		}
-		out[k] = strings.Join(vs, ",")
-	}
-	return out
-}
 
 func extOf(path string) string {
 	i := strings.LastIndexByte(path, '.')

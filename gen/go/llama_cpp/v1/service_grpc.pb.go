@@ -19,21 +19,22 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LlamaCppService_Chat_FullMethodName       = "/llama_cpp.v1.LlamaCppService/Chat"
-	LlamaCppService_ChatStream_FullMethodName = "/llama_cpp.v1.LlamaCppService/ChatStream"
-	LlamaCppService_BatchChat_FullMethodName  = "/llama_cpp.v1.LlamaCppService/BatchChat"
-	LlamaCppService_Embed_FullMethodName      = "/llama_cpp.v1.LlamaCppService/Embed"
-	LlamaCppService_BatchEmbed_FullMethodName = "/llama_cpp.v1.LlamaCppService/BatchEmbed"
-	LlamaCppService_Tokenize_FullMethodName   = "/llama_cpp.v1.LlamaCppService/Tokenize"
-	LlamaCppService_LoadModel_FullMethodName  = "/llama_cpp.v1.LlamaCppService/LoadModel"
-	LlamaCppService_ListModels_FullMethodName = "/llama_cpp.v1.LlamaCppService/ListModels"
+	LlamaCppService_SubmitChat_FullMethodName       = "/llama_cpp.v1.LlamaCppService/SubmitChat"
+	LlamaCppService_SubmitBatchChat_FullMethodName  = "/llama_cpp.v1.LlamaCppService/SubmitBatchChat"
+	LlamaCppService_SubmitEmbed_FullMethodName      = "/llama_cpp.v1.LlamaCppService/SubmitEmbed"
+	LlamaCppService_SubmitBatchEmbed_FullMethodName = "/llama_cpp.v1.LlamaCppService/SubmitBatchEmbed"
+	LlamaCppService_SubmitTokenize_FullMethodName   = "/llama_cpp.v1.LlamaCppService/SubmitTokenize"
+	LlamaCppService_GetResult_FullMethodName        = "/llama_cpp.v1.LlamaCppService/GetResult"
+	LlamaCppService_CancelJob_FullMethodName        = "/llama_cpp.v1.LlamaCppService/CancelJob"
+	LlamaCppService_ChatStream_FullMethodName       = "/llama_cpp.v1.LlamaCppService/ChatStream"
+	LlamaCppService_ListModels_FullMethodName       = "/llama_cpp.v1.LlamaCppService/ListModels"
 )
 
 // LlamaCppServiceClient is the client API for LlamaCppService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// LlamaCppService is the typed inference API exposed by mass-runtime-llama-cpp.
+// LlamaCppService is the typed inference API exposed by mass-runtime-gateway-llama-cpp.
 //
 // The gateway hosts both this gRPC service and an OpenAI-compatible HTTP API.
 // MASS proxies both at /mass.llama-cpp/* paths — gRPC clients dial MASS over
@@ -42,29 +43,42 @@ const (
 // through the gateway's HandleRequest stream and are served by the same
 // internal scheduler/dispatch logic.
 //
-// Wire shapes mirror the gateway's existing typed JSON API 1:1 so HTTP and
-// gRPC clients see identical semantics. ConfigOverride is the per-request
-// hook that controls model load behavior; it shadows the OpenAI-compat shim
-// which has no equivalent.
+// Wire shapes mirror the gateway's typed HTTP API 1:1, including the
+// submit/fetch split: every inference call SUBMITS a job (returns a job_id)
+// and the result is read separately via GetResult. ConfigOverride is the
+// per-request hook that controls model load behavior; it shadows the
+// OpenAI-compat shim which has no equivalent.
+//
+// Submit/fetch model (same as typed HTTP POST + GET /Jobs/{id}):
+//   - Submit*(req) -> {job_id}. The job is durable the moment the id returns;
+//     dropping the Submit before it returns means it was never scheduled.
+//   - GetResult(job_id, wait) -> the typed result. wait=true blocks until the
+//     job is terminal; wait=false returns the current status (poll). This read
+//     is side-effect-free — dropping it never cancels the job.
+//   - CancelJob(job_id) is the only way to stop a running job.
+//
+// ChatStream stays a live token stream for progressive output.
 type LlamaCppServiceClient interface {
-	// Chat is a one-shot chat completion. Returns the full assistant reply.
-	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error)
+	// SubmitChat enqueues a chat completion and returns its job id.
+	SubmitChat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
+	// SubmitBatchChat enqueues N chat completions as one job.
+	SubmitBatchChat(ctx context.Context, in *BatchChatRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
+	// SubmitEmbed enqueues a single-input embedding job.
+	SubmitEmbed(ctx context.Context, in *EmbedRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
+	// SubmitBatchEmbed enqueues a multi-input embedding job.
+	SubmitBatchEmbed(ctx context.Context, in *BatchEmbedRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
+	// SubmitTokenize enqueues a tokenize job (no inference).
+	SubmitTokenize(ctx context.Context, in *TokenizeRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
+	// GetResult reads a submitted job's result by id. wait=true blocks until
+	// terminal; wait=false returns the current status. Durable, read-only.
+	GetResult(ctx context.Context, in *GetResultRequest, opts ...grpc.CallOption) (*JobResult, error)
+	// CancelJob cancels a submitted job (pending or running) by id.
+	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error)
 	// ChatStream returns the assistant reply as a server-streamed sequence
 	// of incremental chunks (delta tokens), terminated by a final chunk
-	// carrying finish_reason + usage.
+	// carrying finish_reason + usage. The live-streaming alternative to
+	// SubmitChat + GetResult.
 	ChatStream(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatChunk], error)
-	// BatchChat runs N independent chat completions against the same loaded
-	// model. Useful for low-overhead fan-out without N HTTP round trips.
-	BatchChat(ctx context.Context, in *BatchChatRequest, opts ...grpc.CallOption) (*BatchChatResponse, error)
-	// Embed returns one embedding vector for one input.
-	Embed(ctx context.Context, in *EmbedRequest, opts ...grpc.CallOption) (*EmbedResponse, error)
-	// BatchEmbed returns one vector per input.
-	BatchEmbed(ctx context.Context, in *BatchEmbedRequest, opts ...grpc.CallOption) (*BatchEmbedResponse, error)
-	// Tokenize converts text into the model's token IDs (no inference).
-	Tokenize(ctx context.Context, in *TokenizeRequest, opts ...grpc.CallOption) (*TokenizeResponse, error)
-	// LoadModel pre-warms a model on a worker without running inference.
-	// Returns once the model is resident on at least one worker.
-	LoadModel(ctx context.Context, in *LoadModelRequest, opts ...grpc.CallOption) (*LoadModelResponse, error)
 	// ListModels returns every gguf file MASS knows about. Identical to the
 	// listing the typed HTTP /v1/Models endpoint returns; mirrored here so
 	// gRPC clients can avoid an out-of-band HTTP call.
@@ -79,10 +93,70 @@ func NewLlamaCppServiceClient(cc grpc.ClientConnInterface) LlamaCppServiceClient
 	return &llamaCppServiceClient{cc}
 }
 
-func (c *llamaCppServiceClient) Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error) {
+func (c *llamaCppServiceClient) SubmitChat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*SubmitResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ChatResponse)
-	err := c.cc.Invoke(ctx, LlamaCppService_Chat_FullMethodName, in, out, cOpts...)
+	out := new(SubmitResponse)
+	err := c.cc.Invoke(ctx, LlamaCppService_SubmitChat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *llamaCppServiceClient) SubmitBatchChat(ctx context.Context, in *BatchChatRequest, opts ...grpc.CallOption) (*SubmitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitResponse)
+	err := c.cc.Invoke(ctx, LlamaCppService_SubmitBatchChat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *llamaCppServiceClient) SubmitEmbed(ctx context.Context, in *EmbedRequest, opts ...grpc.CallOption) (*SubmitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitResponse)
+	err := c.cc.Invoke(ctx, LlamaCppService_SubmitEmbed_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *llamaCppServiceClient) SubmitBatchEmbed(ctx context.Context, in *BatchEmbedRequest, opts ...grpc.CallOption) (*SubmitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitResponse)
+	err := c.cc.Invoke(ctx, LlamaCppService_SubmitBatchEmbed_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *llamaCppServiceClient) SubmitTokenize(ctx context.Context, in *TokenizeRequest, opts ...grpc.CallOption) (*SubmitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitResponse)
+	err := c.cc.Invoke(ctx, LlamaCppService_SubmitTokenize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *llamaCppServiceClient) GetResult(ctx context.Context, in *GetResultRequest, opts ...grpc.CallOption) (*JobResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JobResult)
+	err := c.cc.Invoke(ctx, LlamaCppService_GetResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *llamaCppServiceClient) CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelJobResponse)
+	err := c.cc.Invoke(ctx, LlamaCppService_CancelJob_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -108,56 +182,6 @@ func (c *llamaCppServiceClient) ChatStream(ctx context.Context, in *ChatRequest,
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LlamaCppService_ChatStreamClient = grpc.ServerStreamingClient[ChatChunk]
 
-func (c *llamaCppServiceClient) BatchChat(ctx context.Context, in *BatchChatRequest, opts ...grpc.CallOption) (*BatchChatResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BatchChatResponse)
-	err := c.cc.Invoke(ctx, LlamaCppService_BatchChat_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *llamaCppServiceClient) Embed(ctx context.Context, in *EmbedRequest, opts ...grpc.CallOption) (*EmbedResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(EmbedResponse)
-	err := c.cc.Invoke(ctx, LlamaCppService_Embed_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *llamaCppServiceClient) BatchEmbed(ctx context.Context, in *BatchEmbedRequest, opts ...grpc.CallOption) (*BatchEmbedResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BatchEmbedResponse)
-	err := c.cc.Invoke(ctx, LlamaCppService_BatchEmbed_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *llamaCppServiceClient) Tokenize(ctx context.Context, in *TokenizeRequest, opts ...grpc.CallOption) (*TokenizeResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TokenizeResponse)
-	err := c.cc.Invoke(ctx, LlamaCppService_Tokenize_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *llamaCppServiceClient) LoadModel(ctx context.Context, in *LoadModelRequest, opts ...grpc.CallOption) (*LoadModelResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(LoadModelResponse)
-	err := c.cc.Invoke(ctx, LlamaCppService_LoadModel_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *llamaCppServiceClient) ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListModelsResponse)
@@ -172,7 +196,7 @@ func (c *llamaCppServiceClient) ListModels(ctx context.Context, in *ListModelsRe
 // All implementations must embed UnimplementedLlamaCppServiceServer
 // for forward compatibility.
 //
-// LlamaCppService is the typed inference API exposed by mass-runtime-llama-cpp.
+// LlamaCppService is the typed inference API exposed by mass-runtime-gateway-llama-cpp.
 //
 // The gateway hosts both this gRPC service and an OpenAI-compatible HTTP API.
 // MASS proxies both at /mass.llama-cpp/* paths — gRPC clients dial MASS over
@@ -181,29 +205,42 @@ func (c *llamaCppServiceClient) ListModels(ctx context.Context, in *ListModelsRe
 // through the gateway's HandleRequest stream and are served by the same
 // internal scheduler/dispatch logic.
 //
-// Wire shapes mirror the gateway's existing typed JSON API 1:1 so HTTP and
-// gRPC clients see identical semantics. ConfigOverride is the per-request
-// hook that controls model load behavior; it shadows the OpenAI-compat shim
-// which has no equivalent.
+// Wire shapes mirror the gateway's typed HTTP API 1:1, including the
+// submit/fetch split: every inference call SUBMITS a job (returns a job_id)
+// and the result is read separately via GetResult. ConfigOverride is the
+// per-request hook that controls model load behavior; it shadows the
+// OpenAI-compat shim which has no equivalent.
+//
+// Submit/fetch model (same as typed HTTP POST + GET /Jobs/{id}):
+//   - Submit*(req) -> {job_id}. The job is durable the moment the id returns;
+//     dropping the Submit before it returns means it was never scheduled.
+//   - GetResult(job_id, wait) -> the typed result. wait=true blocks until the
+//     job is terminal; wait=false returns the current status (poll). This read
+//     is side-effect-free — dropping it never cancels the job.
+//   - CancelJob(job_id) is the only way to stop a running job.
+//
+// ChatStream stays a live token stream for progressive output.
 type LlamaCppServiceServer interface {
-	// Chat is a one-shot chat completion. Returns the full assistant reply.
-	Chat(context.Context, *ChatRequest) (*ChatResponse, error)
+	// SubmitChat enqueues a chat completion and returns its job id.
+	SubmitChat(context.Context, *ChatRequest) (*SubmitResponse, error)
+	// SubmitBatchChat enqueues N chat completions as one job.
+	SubmitBatchChat(context.Context, *BatchChatRequest) (*SubmitResponse, error)
+	// SubmitEmbed enqueues a single-input embedding job.
+	SubmitEmbed(context.Context, *EmbedRequest) (*SubmitResponse, error)
+	// SubmitBatchEmbed enqueues a multi-input embedding job.
+	SubmitBatchEmbed(context.Context, *BatchEmbedRequest) (*SubmitResponse, error)
+	// SubmitTokenize enqueues a tokenize job (no inference).
+	SubmitTokenize(context.Context, *TokenizeRequest) (*SubmitResponse, error)
+	// GetResult reads a submitted job's result by id. wait=true blocks until
+	// terminal; wait=false returns the current status. Durable, read-only.
+	GetResult(context.Context, *GetResultRequest) (*JobResult, error)
+	// CancelJob cancels a submitted job (pending or running) by id.
+	CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error)
 	// ChatStream returns the assistant reply as a server-streamed sequence
 	// of incremental chunks (delta tokens), terminated by a final chunk
-	// carrying finish_reason + usage.
+	// carrying finish_reason + usage. The live-streaming alternative to
+	// SubmitChat + GetResult.
 	ChatStream(*ChatRequest, grpc.ServerStreamingServer[ChatChunk]) error
-	// BatchChat runs N independent chat completions against the same loaded
-	// model. Useful for low-overhead fan-out without N HTTP round trips.
-	BatchChat(context.Context, *BatchChatRequest) (*BatchChatResponse, error)
-	// Embed returns one embedding vector for one input.
-	Embed(context.Context, *EmbedRequest) (*EmbedResponse, error)
-	// BatchEmbed returns one vector per input.
-	BatchEmbed(context.Context, *BatchEmbedRequest) (*BatchEmbedResponse, error)
-	// Tokenize converts text into the model's token IDs (no inference).
-	Tokenize(context.Context, *TokenizeRequest) (*TokenizeResponse, error)
-	// LoadModel pre-warms a model on a worker without running inference.
-	// Returns once the model is resident on at least one worker.
-	LoadModel(context.Context, *LoadModelRequest) (*LoadModelResponse, error)
 	// ListModels returns every gguf file MASS knows about. Identical to the
 	// listing the typed HTTP /v1/Models endpoint returns; mirrored here so
 	// gRPC clients can avoid an out-of-band HTTP call.
@@ -218,26 +255,29 @@ type LlamaCppServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedLlamaCppServiceServer struct{}
 
-func (UnimplementedLlamaCppServiceServer) Chat(context.Context, *ChatRequest) (*ChatResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Chat not implemented")
+func (UnimplementedLlamaCppServiceServer) SubmitChat(context.Context, *ChatRequest) (*SubmitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitChat not implemented")
+}
+func (UnimplementedLlamaCppServiceServer) SubmitBatchChat(context.Context, *BatchChatRequest) (*SubmitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitBatchChat not implemented")
+}
+func (UnimplementedLlamaCppServiceServer) SubmitEmbed(context.Context, *EmbedRequest) (*SubmitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitEmbed not implemented")
+}
+func (UnimplementedLlamaCppServiceServer) SubmitBatchEmbed(context.Context, *BatchEmbedRequest) (*SubmitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitBatchEmbed not implemented")
+}
+func (UnimplementedLlamaCppServiceServer) SubmitTokenize(context.Context, *TokenizeRequest) (*SubmitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitTokenize not implemented")
+}
+func (UnimplementedLlamaCppServiceServer) GetResult(context.Context, *GetResultRequest) (*JobResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetResult not implemented")
+}
+func (UnimplementedLlamaCppServiceServer) CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelJob not implemented")
 }
 func (UnimplementedLlamaCppServiceServer) ChatStream(*ChatRequest, grpc.ServerStreamingServer[ChatChunk]) error {
 	return status.Error(codes.Unimplemented, "method ChatStream not implemented")
-}
-func (UnimplementedLlamaCppServiceServer) BatchChat(context.Context, *BatchChatRequest) (*BatchChatResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BatchChat not implemented")
-}
-func (UnimplementedLlamaCppServiceServer) Embed(context.Context, *EmbedRequest) (*EmbedResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Embed not implemented")
-}
-func (UnimplementedLlamaCppServiceServer) BatchEmbed(context.Context, *BatchEmbedRequest) (*BatchEmbedResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BatchEmbed not implemented")
-}
-func (UnimplementedLlamaCppServiceServer) Tokenize(context.Context, *TokenizeRequest) (*TokenizeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Tokenize not implemented")
-}
-func (UnimplementedLlamaCppServiceServer) LoadModel(context.Context, *LoadModelRequest) (*LoadModelResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method LoadModel not implemented")
 }
 func (UnimplementedLlamaCppServiceServer) ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListModels not implemented")
@@ -263,20 +303,128 @@ func RegisterLlamaCppServiceServer(s grpc.ServiceRegistrar, srv LlamaCppServiceS
 	s.RegisterService(&LlamaCppService_ServiceDesc, srv)
 }
 
-func _LlamaCppService_Chat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _LlamaCppService_SubmitChat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ChatRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LlamaCppServiceServer).Chat(ctx, in)
+		return srv.(LlamaCppServiceServer).SubmitChat(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: LlamaCppService_Chat_FullMethodName,
+		FullMethod: LlamaCppService_SubmitChat_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LlamaCppServiceServer).Chat(ctx, req.(*ChatRequest))
+		return srv.(LlamaCppServiceServer).SubmitChat(ctx, req.(*ChatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LlamaCppService_SubmitBatchChat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchChatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LlamaCppServiceServer).SubmitBatchChat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LlamaCppService_SubmitBatchChat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LlamaCppServiceServer).SubmitBatchChat(ctx, req.(*BatchChatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LlamaCppService_SubmitEmbed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmbedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LlamaCppServiceServer).SubmitEmbed(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LlamaCppService_SubmitEmbed_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LlamaCppServiceServer).SubmitEmbed(ctx, req.(*EmbedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LlamaCppService_SubmitBatchEmbed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchEmbedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LlamaCppServiceServer).SubmitBatchEmbed(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LlamaCppService_SubmitBatchEmbed_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LlamaCppServiceServer).SubmitBatchEmbed(ctx, req.(*BatchEmbedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LlamaCppService_SubmitTokenize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TokenizeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LlamaCppServiceServer).SubmitTokenize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LlamaCppService_SubmitTokenize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LlamaCppServiceServer).SubmitTokenize(ctx, req.(*TokenizeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LlamaCppService_GetResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LlamaCppServiceServer).GetResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LlamaCppService_GetResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LlamaCppServiceServer).GetResult(ctx, req.(*GetResultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LlamaCppService_CancelJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LlamaCppServiceServer).CancelJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LlamaCppService_CancelJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LlamaCppServiceServer).CancelJob(ctx, req.(*CancelJobRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -291,96 +439,6 @@ func _LlamaCppService_ChatStream_Handler(srv interface{}, stream grpc.ServerStre
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LlamaCppService_ChatStreamServer = grpc.ServerStreamingServer[ChatChunk]
-
-func _LlamaCppService_BatchChat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BatchChatRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LlamaCppServiceServer).BatchChat(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: LlamaCppService_BatchChat_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LlamaCppServiceServer).BatchChat(ctx, req.(*BatchChatRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _LlamaCppService_Embed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(EmbedRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LlamaCppServiceServer).Embed(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: LlamaCppService_Embed_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LlamaCppServiceServer).Embed(ctx, req.(*EmbedRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _LlamaCppService_BatchEmbed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BatchEmbedRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LlamaCppServiceServer).BatchEmbed(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: LlamaCppService_BatchEmbed_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LlamaCppServiceServer).BatchEmbed(ctx, req.(*BatchEmbedRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _LlamaCppService_Tokenize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TokenizeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LlamaCppServiceServer).Tokenize(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: LlamaCppService_Tokenize_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LlamaCppServiceServer).Tokenize(ctx, req.(*TokenizeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _LlamaCppService_LoadModel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(LoadModelRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LlamaCppServiceServer).LoadModel(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: LlamaCppService_LoadModel_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LlamaCppServiceServer).LoadModel(ctx, req.(*LoadModelRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
 
 func _LlamaCppService_ListModels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListModelsRequest)
@@ -408,28 +466,32 @@ var LlamaCppService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*LlamaCppServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Chat",
-			Handler:    _LlamaCppService_Chat_Handler,
+			MethodName: "SubmitChat",
+			Handler:    _LlamaCppService_SubmitChat_Handler,
 		},
 		{
-			MethodName: "BatchChat",
-			Handler:    _LlamaCppService_BatchChat_Handler,
+			MethodName: "SubmitBatchChat",
+			Handler:    _LlamaCppService_SubmitBatchChat_Handler,
 		},
 		{
-			MethodName: "Embed",
-			Handler:    _LlamaCppService_Embed_Handler,
+			MethodName: "SubmitEmbed",
+			Handler:    _LlamaCppService_SubmitEmbed_Handler,
 		},
 		{
-			MethodName: "BatchEmbed",
-			Handler:    _LlamaCppService_BatchEmbed_Handler,
+			MethodName: "SubmitBatchEmbed",
+			Handler:    _LlamaCppService_SubmitBatchEmbed_Handler,
 		},
 		{
-			MethodName: "Tokenize",
-			Handler:    _LlamaCppService_Tokenize_Handler,
+			MethodName: "SubmitTokenize",
+			Handler:    _LlamaCppService_SubmitTokenize_Handler,
 		},
 		{
-			MethodName: "LoadModel",
-			Handler:    _LlamaCppService_LoadModel_Handler,
+			MethodName: "GetResult",
+			Handler:    _LlamaCppService_GetResult_Handler,
+		},
+		{
+			MethodName: "CancelJob",
+			Handler:    _LlamaCppService_CancelJob_Handler,
 		},
 		{
 			MethodName: "ListModels",

@@ -8,6 +8,13 @@
 *.so
 *.dylib
 
+# Built gateway binary — produced by `make build`.
+/bin/
+
+# Built .mass package — produced by `make package`, distributed via
+# GitHub releases, not source-tracked.
+dist/*.mass
+
 # Test binary, built with `go test -c`
 *.test
 

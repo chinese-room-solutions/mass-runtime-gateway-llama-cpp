@@ -1,0 +1,67 @@
+name: release
+
+# On a version tag (or manual dispatch), build the .mass package on each
+# target OS and attach all of them to a single GitHub Release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write  # upload release artifacts
+
+env:
+  GOPRIVATE: github.com/chinese-room-solutions/*
+
+jobs:
+  package:
+    name: package (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `asset` is the release-asset basename: <name>_<goos>_<goarch>, no
+        # version — stable names keep releases/latest/download/ links evergreen.
+        include:
+          - os: ubuntu-latest
+            label: linux-amd64
+            asset: mass-runtime-gateway-llama-cpp_linux_amd64
+          - os: windows-latest
+            label: windows-amd64
+            asset: mass-runtime-gateway-llama-cpp_windows_amd64
+          - os: macos-15
+            label: macos-arm64
+            asset: mass-runtime-gateway-llama-cpp_darwin_arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Configure private module access
+        shell: bash
+        run: git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - name: Test
+        run: make test
+      - name: Package
+        run: make package
+      - name: Rename for platform
+        shell: bash
+        run: |
+          mv dist/mass-runtime-gateway-llama-cpp.mass dist/${{ matrix.asset }}.mass
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*.mass
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/**/*.mass
+          generate_release_notes: true

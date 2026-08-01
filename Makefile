@@ -2,7 +2,6 @@
 
 BIN_DIR := bin
 DIST_DIR := dist
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 ifeq ($(OS),Windows_NT)
   BINARY_EXT := .exe
@@ -10,13 +9,16 @@ else
   BINARY_EXT :=
 endif
 
-BINARY := $(BIN_DIR)/mass-runtime-llama-cpp$(BINARY_EXT)
-PACKAGE := $(DIST_DIR)/mass-runtime-llama-cpp.mass
+BINARY := $(BIN_DIR)/mass-runtime-gateway-llama-cpp$(BINARY_EXT)
+PACKAGE := $(DIST_DIR)/mass-runtime-gateway-llama-cpp.mass
 
+# The gateway reads its version from runtime.yml at runtime — see
+# cmd/mass-runtime-gateway-llama-cpp/main.go and mass-sdk/manifest. We therefore
+# don't bake a -X main.version=... build flag.
 build:
 	@mkdir -p $(BIN_DIR)
-	@echo "==> Building gateway ($(VERSION))..."
-	CGO_ENABLED=0 go build -ldflags '-X main.version=$(VERSION)' -o $(BINARY) ./cmd/mass-runtime-llama-cpp
+	@echo "==> Building gateway..."
+	CGO_ENABLED=0 go build -o $(BINARY) ./cmd/mass-runtime-gateway-llama-cpp
 	@echo "    Built: $(BINARY)"
 
 # Pack the binary + manifest into a Zip-format .mass archive that MASS's
@@ -29,13 +31,14 @@ clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
 
 lint:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --timeout 10m ./...
+	@# golangci-lint must be built with a toolchain >= the repo's go directive or it refuses to load.
+	GOTOOLCHAIN=go$$(go list -m -f '{{.GoVersion}}') go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run --timeout 10m ./...
 
 unittest:
-	go test ./internal/... -short -count=1
+	go test ./... -short -count=1
 
 test:
-	go test ./internal/... -race -count=1 -timeout 10m
+	go test ./... -race -count=1 -timeout 10m
 
 fmt:
 	gofmt -s -w .
@@ -55,7 +58,7 @@ gen:
 
 help:
 	@echo ""
-	@echo "  mass-runtime-llama-cpp"
+	@echo "  mass-runtime-gateway-llama-cpp"
 	@echo ""
 	@echo "  Targets:"
 	@echo "    build     Build the gateway binary"

@@ -10,8 +10,8 @@ import (
 
 // sourceContextKey identifies the inbound request's caller in ctx. Populated
 // at the entry point (HTTP middleware or gRPC interceptor) so deeper
-// helpers like ensureLoaded can attribute model loads without rewiring
-// every call site.
+// helpers (Schedule submitting envelopes with source attribution) can pick
+// it up without rewiring every call site.
 type sourceContextKey struct{}
 
 // withSource attaches a caller identity to ctx. Empty source is a no-op.
