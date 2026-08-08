@@ -4,6 +4,7 @@
 - Subagent: do the work yourself. Never spawn further agents.
 - Scale verification to the risk of being wrong. A cosmetic markup/CSS change needs a rebuild and one look at it; a cross-engine, multi-file, or unproven diagnosis needs measured numbers. Over-specified verification is how a small fix gets expensive.
 - Verify a diagnosis against current code before fixing it. One commit per fix.
+- Commit messages: as short as the change allows — one subject line, a body only for a why the diff doesn't show. No `Co-Authored-By` or any other trailer.
 
 ## Code quality
 - Follow the best practices of this repo's stack, and good project organization.
