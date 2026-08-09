@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/KernelPryanic/ctxerr v1.0.0
 	github.com/KernelPryanic/golog v1.2.0
-	github.com/chinese-room-solutions/mass-proto/gen/go v0.1.0
+	github.com/chinese-room-solutions/mass-proto/gen/go v0.2.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/chinese-room-solutions/mass-sdk v0.1.0
+	github.com/chinese-room-solutions/mass-sdk v0.1.6
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
