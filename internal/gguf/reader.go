@@ -207,8 +207,7 @@ func (m *Meta) ParameterCount() uint64 {
 // expert_used_count of expert_count experts, so only used/count of the
 // routed-expert weights participate in a forward pass: pricing the
 // total over-predicted MoE cost by up to ~20× (gpt-oss-120b runs ~5B
-// of its 117B per token), far beyond the scheduler's correction-EWMA
-// clamp.
+// of its 117B per token).
 //
 //	active = total − routed_expert_params × (count − used) / count
 //

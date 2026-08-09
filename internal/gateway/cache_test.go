@@ -201,113 +201,27 @@ func TestMetadataCacheProperties(t *testing.T) {
 	}
 }
 
-// handlers.loadByteEstimate returns (base, perSlot, headroom). base
-// is weights + scratch; perSlot is one context's KV cache; headroom
-// is the explicit LoadHints override or 0 (no override — MASS then
-// reads the worker-reported flag). The table covers the
-// file-aggregation and catalogue-resolution paths.
-func TestHandlersLoadByteEstimate(t *testing.T) {
-	const gb = int64(1024 * 1024 * 1024)
-	const scratch = int64(512 * 1024 * 1024)
-	// 32 layers * 4096 ctx * 32 kv-heads * (4096/32) head_dim * 2 K+V *
-	// 2 bytes = 2 GB. Matches TestEstimateLoadBytes.
-	const perSlotKV = 2 * gb
-	tmp := t.TempDir()
-	cache := newMetadataCache(tmp, tmp, zerolog.Nop())
-	primaryPath := filepath.Join(tmp, "gguf", "m", "primary.gguf")
-	cache.entries["gguf/m/primary.gguf"] = &catalogueEntry{
-		Name: "m",
-		Properties: map[string]string{
-			"layers": "32", "embedding": "4096",
-			"head_count": "32", "head_count_kv": "32",
-		},
-	}
-
-	hintsDefault := &llamacpp.LoadHints{ContextSize: 4096}
+// headroomPct forwards only an explicit LoadHints override; absent one
+// MASS reads the worker's own registration-reported flag, so a
+// gateway-side default here would mask it.
+func TestHeadroomPct(t *testing.T) {
 	override := int32(60)
-	hintsOverride := &llamacpp.LoadHints{ContextSize: 4096, VramHeadroomPct: &override}
+	zero := int32(0)
+	negative := int32(-5)
 	tests := []struct {
-		name         string
-		h            *handlers
-		files        []*workerpb.ModelFile
-		hints        *llamacpp.LoadHints
-		wantBase     int64
-		wantPerSlot  int64
-		wantHeadroom int32
+		name  string
+		hints *llamacpp.LoadHints
+		want  int32
 	}{
-		{
-			name:  "nil handler returns zeros",
-			h:     nil,
-			files: []*workerpb.ModelFile{{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 5 * gb}},
-			hints: hintsDefault,
-		},
-		{
-			name:  "handler without cache returns zeros",
-			h:     &handlers{},
-			files: []*workerpb.ModelFile{{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 5 * gb}},
-			hints: hintsDefault,
-		},
-		{
-			name:         "primary only: base=weights+scratch, perSlot=KV, no headroom override",
-			h:            &handlers{cache: cache},
-			files:        []*workerpb.ModelFile{{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 5 * gb}},
-			hints:        hintsDefault,
-			wantBase:     5*gb + scratch,
-			wantPerSlot:  perSlotKV,
-		},
-		{
-			// Mmproj adds to base (loaded onto the device too); perSlot
-			// stays the same since KV math reads only the primary's
-			// properties.
-			name: "mmproj adds to base",
-			h:    &handlers{cache: cache},
-			files: []*workerpb.ModelFile{
-				{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 5 * gb},
-				{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_MMPROJ, LocalPath: "/abs/proj.gguf", SizeBytes: 1 * gb},
-			},
-			hints:        hintsDefault,
-			wantBase:     6*gb + scratch,
-			wantPerSlot:  perSlotKV,
-		},
-		{
-			name:         "LoadHints headroom override propagates",
-			h:            &handlers{cache: cache},
-			files:        []*workerpb.ModelFile{{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 5 * gb}},
-			hints:        hintsOverride,
-			wantBase:     5*gb + scratch,
-			wantPerSlot:  perSlotKV,
-			wantHeadroom: 60,
-		},
-		{
-			name:  "zero file bytes returns zeros",
-			h:     &handlers{cache: cache},
-			files: []*workerpb.ModelFile{{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 0}},
-			hints: hintsDefault,
-		},
-		{
-			name:  "primary without local_path returns zeros",
-			h:     &handlers{cache: cache},
-			files: []*workerpb.ModelFile{{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: "", SizeBytes: 5 * gb}},
-			hints: hintsDefault,
-		},
-		{
-			name: "nil file entry is skipped",
-			h:    &handlers{cache: cache},
-			files: []*workerpb.ModelFile{
-				nil,
-				{Role: workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY, LocalPath: primaryPath, SizeBytes: 5 * gb},
-			},
-			hints:        hintsDefault,
-			wantBase:     5*gb + scratch,
-			wantPerSlot:  perSlotKV,
-		},
+		{"nil hints", nil, 0},
+		{"no override", &llamacpp.LoadHints{ContextSize: 4096}, 0},
+		{"explicit override propagates", &llamacpp.LoadHints{VramHeadroomPct: &override}, 60},
+		{"zero override is no override", &llamacpp.LoadHints{VramHeadroomPct: &zero}, 0},
+		{"negative override is no override", &llamacpp.LoadHints{VramHeadroomPct: &negative}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			base, perSlot, headroom := tt.h.loadByteEstimate(tt.files, tt.hints)
-			require.Equal(t, tt.wantBase, base)
-			require.Equal(t, tt.wantPerSlot, perSlot)
-			require.Equal(t, tt.wantHeadroom, headroom)
+			require.Equal(t, tt.want, headroomPct(tt.hints))
 		})
 	}
 }

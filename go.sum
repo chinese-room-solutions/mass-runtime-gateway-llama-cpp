@@ -6,10 +6,10 @@ github.com/bufbuild/protocompile v0.14.1 h1:iA73zAf/fyljNjQKwYzUHD6AD4R8KMasmwa/
 github.com/bufbuild/protocompile v0.14.1/go.mod h1:ppVdAIhbr2H8asPk6k4pY7t9zB1OU5DoEw9xY/FUi1c=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
-github.com/chinese-room-solutions/mass-proto/gen/go v0.1.0 h1:aIkdJvBulfri4nwkCNlzR5eOxycuRJQHXrM096imcyc=
-github.com/chinese-room-solutions/mass-proto/gen/go v0.1.0/go.mod h1:bYv3mkM7N5kKKJPAWcJFUfRtZTd4Xl3kNCOwjvf9EaA=
-github.com/chinese-room-solutions/mass-sdk v0.1.0 h1:+l9OTBea2gy347Z/AIIDKQAPtuDbppdKE/RUAk40on4=
-github.com/chinese-room-solutions/mass-sdk v0.1.0/go.mod h1:VM0+xi//xUdaktkbkMKTqqw9cmhMKZY6MWsfeq2Ba7w=
+github.com/chinese-room-solutions/mass-proto/gen/go v0.2.0 h1:xVL+A/YdKLIEFrsHqmgvDGWOTYUjHRK+x0kMnmYm4WU=
+github.com/chinese-room-solutions/mass-proto/gen/go v0.2.0/go.mod h1:bYv3mkM7N5kKKJPAWcJFUfRtZTd4Xl3kNCOwjvf9EaA=
+github.com/chinese-room-solutions/mass-sdk v0.1.6 h1:LK5jVNYkLTn8j1wL6fbDKT2EiLxYqEVXifXNewUaDUk=
+github.com/chinese-room-solutions/mass-sdk v0.1.6/go.mod h1:VM0+xi//xUdaktkbkMKTqqw9cmhMKZY6MWsfeq2Ba7w=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

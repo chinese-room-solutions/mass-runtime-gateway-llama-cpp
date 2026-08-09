@@ -60,31 +60,18 @@ const (
 // every Submit so MASS can load-on-demand at dispatch when the chosen
 // worker doesn't already have the model resident.
 //
-// Cost + CostAxis are the gateway's prediction of this job's compute
-// work on the runtime's reference workload (see internal/gateway/weight.go
-// — all prediction physics lives there, on the runtime side). MASS never
-// interprets the units: the only quantity it derives is time, by dividing
-// Cost by the chosen worker's benched throughput on CostAxis. Units are
-// runtime-private; MASS only compares within a runtime.
+// Cost is the gateway's prediction of this job's work in the model's
+// own units (see internal/gateway/weight.go — all prediction physics
+// lives there, on the runtime side). MASS never interprets the units:
+// the only quantity it derives is time, by dividing Cost by the model's
+// benched units/sec on the chosen worker. The gateway must price bench
+// payloads (AuthorBenchPayload) in that same unit.
 type ScheduleParams struct {
 	ModelID   string
 	Payload   []byte
 	Cost      float64
-	CostAxis  string
 	Files     []*workerpb.ModelFile
 	LoadHints []byte
-	// BaseLoadBytes is the gateway's prediction of the fixed
-	// device-memory cost the load pays regardless of concurrency
-	// (weights + scratch). MASS uses it to filter workers whose free
-	// memory can't fit and to anchor the pool-size projection. 0 =
-	// unknown — MASS skips the eligibility check.
-	BaseLoadBytes int64
-	// PerSlotBytes is the gateway's prediction of the per-slot
-	// incremental cost (KV at the configured ctx). MASS combines it
-	// with the chosen worker's free memory to project the
-	// post-headroom pool size used for wall-clock load latency. 0 =
-	// no concurrency dimension — projection collapses to pool=1.
-	PerSlotBytes int64
 	// HeadroomPct is the device-memory watermark (1-100) the worker
 	// will respect when growing the pool. 0 = unknown, MASS falls
 	// back to a runtime-agnostic constant.
@@ -141,17 +128,14 @@ func (c *Client) Reattach(ctx context.Context, jobID string) <-chan JobChunk {
 // streamed — MASS persists the terminal result in its durable store.
 func (c *Client) SubmitOnly(ctx context.Context, p ScheduleParams) (string, error) {
 	resp, err := c.c.Submit(ctx, &gatewaypb.SubmitRequest{
-		ModelId:       p.ModelID,
-		Payload:       p.Payload,
-		Cost:          p.Cost,
-		CostAxis:      p.CostAxis,
-		Files:         p.Files,
-		LoadHints:     p.LoadHints,
-		BaseLoadBytes: p.BaseLoadBytes,
-		PerSlotBytes:  p.PerSlotBytes,
-		HeadroomPct:   p.HeadroomPct,
-		Source:        p.Source,
-		Priority:      p.Priority,
+		ModelId:     p.ModelID,
+		Payload:     p.Payload,
+		Cost:        p.Cost,
+		Files:       p.Files,
+		LoadHints:   p.LoadHints,
+		HeadroomPct: p.HeadroomPct,
+		Source:      p.Source,
+		Priority:    p.Priority,
 	})
 	if err != nil {
 		return "", ctxerr.With(fmt.Errorf("submit job: %w", err), map[string]any{"model_id": p.ModelID})

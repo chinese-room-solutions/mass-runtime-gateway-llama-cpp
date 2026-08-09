@@ -95,7 +95,7 @@ func TestClient_SubmitOnlyReturnsJobID(t *testing.T) {
 	client, cleanup := newTestClient(t, fake)
 	defer cleanup()
 
-	id, err := client.SubmitOnly(context.Background(), ScheduleParams{ModelID: "m", Cost: 1, CostAxis: "x"})
+	id, err := client.SubmitOnly(context.Background(), ScheduleParams{ModelID: "m", Cost: 1})
 	require.NoError(t, err)
 	require.Equal(t, "job-1", id)
 }

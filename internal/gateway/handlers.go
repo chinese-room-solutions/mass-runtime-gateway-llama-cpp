@@ -575,7 +575,7 @@ func (h *handlers) decodeWarner(jobID string) func(error) {
 type buildJobFunc func() (*llamacpp.Job, string, *llamacpp.LoadHints, []*workerpb.ModelFile, error)
 
 // buildScheduleParams encodes the job + load artifacts and predicts the
-// cost/memory fields MASS scores on. Shared by the sync and async paths.
+// cost MASS scores on. Shared by the sync and async paths.
 func (h *handlers) buildScheduleParams(ctx context.Context, modelID string, job *llamacpp.Job, hints *llamacpp.LoadHints, files []*workerpb.ModelFile) (sched.ScheduleParams, error) {
 	bodyBytes, err := payload.EncodeJob(job)
 	if err != nil {
@@ -585,8 +585,6 @@ func (h *handlers) buildScheduleParams(ctx context.Context, modelID string, job 
 	if err != nil {
 		return sched.ScheduleParams{}, ctxerr.With(fmt.Errorf("encoding load hints: %w", err), map[string]any{"model_id": modelID})
 	}
-	cost, axis := predictCost(job, h.primaryParameterCount(files), h.primaryThinking(files), h.visionParamsFor(files))
-	base, perSlot, headroom := h.loadByteEstimate(files, hints)
 	// Batch work is throughput-oriented and must not delay interactive
 	// chat on the same worker queue: submit it at LOW priority.
 	var prio gatewaypb.JobPriority
@@ -595,18 +593,25 @@ func (h *handlers) buildScheduleParams(ctx context.Context, modelID string, job 
 		prio = gatewaypb.JobPriority_JOB_PRIORITY_LOW
 	}
 	return sched.ScheduleParams{
-		ModelID:       modelID,
-		Payload:       bodyBytes,
-		Cost:          cost,
-		CostAxis:      axis,
-		Files:         files,
-		LoadHints:     hintsBytes,
-		BaseLoadBytes: base,
-		PerSlotBytes:  perSlot,
-		HeadroomPct:   headroom,
-		Source:        sourceFromContext(ctx),
-		Priority:      prio,
+		ModelID:     modelID,
+		Payload:     bodyBytes,
+		Cost:        h.jobCost(job, files),
+		Files:       files,
+		LoadHints:   hintsBytes,
+		HeadroomPct: headroomPct(hints),
+		Source:      sourceFromContext(ctx),
+		Priority:    prio,
 	}, nil
+}
+
+// jobCost is the gateway's one costing entry point: it resolves the
+// model-shape inputs [predictCost] needs from the catalogue and returns
+// the job's cost in the runtime's model-native unit. Both the Submit
+// path and [Gateway.AuthorBenchPayload] go through it — a bench cost
+// computed any other way would silently skew every estimate for the
+// model.
+func (h *handlers) jobCost(job *llamacpp.Job, files []*workerpb.ModelFile) float64 {
+	return predictCost(job, h.primaryParameterCount(files), h.primaryThinking(files), h.visionParamsFor(files))
 }
 
 // primaryParameterCount looks up the compute-relevant parameter count
@@ -684,49 +689,17 @@ func (h *handlers) visionParamsFor(files []*workerpb.ModelFile) visionParams {
 	return visionParams{}
 }
 
-// loadByteEstimate returns the gateway's predictions for the three
-// load-cost fields MASS plumbs through Submit:
-//
-//   - base    : fixed device-memory cost (weights + scratch) the load
-//     pays regardless of concurrency.
-//   - perSlot : incremental cost per additional context slot (KV at
-//     the configured ctx). 0 when GGUF metadata is too sparse to size
-//     it honestly — the projection collapses to pool=1.
-//   - headroom: the operator's explicit per-load watermark override
-//     from LoadHints, or 0 when none was given. The worker applies a
-//     per-load hint over its own --vram-headroom-pct flag, so MASS
-//     must see the override to project the pool the worker will
-//     actually grow; absent an override MASS reads the worker's
-//     registration-reported flag instead — sending a gateway-side
-//     default here would mask it.
-//
-// Returns (0, 0, 0) when fileBytes is 0 or no primary path is
-// resolvable — MASS treats base=0 as "skip the eligibility check"
-// and falls back to pay-on-failure.
-func (h *handlers) loadByteEstimate(files []*workerpb.ModelFile, hints *llamacpp.LoadHints) (base, perSlot int64, headroom int32) {
-	if h == nil || h.cache == nil {
-		return 0, 0, 0
+// headroomPct is the operator's explicit per-load watermark override
+// from LoadHints, or 0 when none was given. The worker applies a
+// per-load hint over its own --vram-headroom-pct flag, so MASS must
+// see the override to project the pool the worker will actually grow;
+// absent an override MASS reads the worker's registration-reported
+// flag instead — sending a gateway-side default here would mask it.
+func headroomPct(hints *llamacpp.LoadHints) int32 {
+	if hints == nil || hints.VramHeadroomPct == nil || *hints.VramHeadroomPct <= 0 {
+		return 0
 	}
-	var fileBytes int64
-	var primaryPath string
-	for _, f := range files {
-		if f == nil {
-			continue
-		}
-		fileBytes += f.GetSizeBytes()
-		if f.GetRole() == workerpb.ModelFileRole_MODEL_FILE_ROLE_PRIMARY && primaryPath == "" {
-			primaryPath = f.GetLocalPath()
-		}
-	}
-	if fileBytes <= 0 || primaryPath == "" {
-		return 0, 0, 0
-	}
-	props := h.cache.properties(primaryPath)
-	base, perSlot = estimateLoadBytes(fileBytes, props, hints.GetContextSize())
-	if hints != nil && hints.VramHeadroomPct != nil && *hints.VramHeadroomPct > 0 {
-		headroom = *hints.VramHeadroomPct
-	}
-	return base, perSlot, headroom
+	return *hints.VramHeadroomPct
 }
 
 func (h *handlers) buildChatJob(req *chatRequest, stream bool) (*llamacpp.Job, string, error) {

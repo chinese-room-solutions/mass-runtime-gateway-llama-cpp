@@ -20,10 +20,10 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// dispatchWithID() must call predictCost(job) and pass the resulting (cost,
-// axis) on the wire. Tests the integration glue between the estimator
+// dispatchWithID() must call predictCost(job) and pass the resulting
+// cost on the wire. Tests the integration glue between the estimator
 // and the scheduler client.
-func TestDispatchPassesCostAndAxisToSubmit(t *testing.T) {
+func TestDispatchPassesCostToSubmit(t *testing.T) {
 	const promptLen = 400
 	job := &llamacpp.Job{
 		Kind: llamacpp.JobKind_JOB_KIND_CHAT,
@@ -41,7 +41,7 @@ func TestDispatchPassesCostAndAxisToSubmit(t *testing.T) {
 	// dispatch passes thinking=false to predictCost. The integration
 	// assertion is that the wire cost equals predictCost for the exact
 	// same (job, 0, false) tuple dispatch will compute.
-	wantCost, wantAxis := predictCost(job, 0, false, visionParams{})
+	wantCost := predictCost(job, 0, false, visionParams{})
 
 	fake := &captureScheduler{}
 	client, cleanup := newDispatchTestClient(t, fake)
@@ -59,7 +59,6 @@ func TestDispatchPassesCostAndAxisToSubmit(t *testing.T) {
 
 	require.Equal(t, int32(1), fake.submits.Load(), "dispatch should call Submit exactly once")
 	require.InDelta(t, wantCost, fake.lastCost.Load().(float64), 1e-9, "wire cost must equal predictCost(job)")
-	require.Equal(t, wantAxis, fake.lastAxis.Load().(string), "wire cost_axis must equal predictCost(job)")
 }
 
 // captureScheduler is a minimal MassSchedulerServer that lets dispatchWithID()
@@ -70,14 +69,12 @@ type captureScheduler struct {
 
 	submits      atomic.Int32
 	lastCost     atomic.Value // float64
-	lastAxis     atomic.Value // string
 	lastPriority atomic.Value // gatewaypb.JobPriority
 }
 
 func (c *captureScheduler) Submit(_ context.Context, req *gatewaypb.SubmitRequest) (*gatewaypb.SubmitResponse, error) {
 	c.submits.Add(1)
 	c.lastCost.Store(req.GetCost())
-	c.lastAxis.Store(req.GetCostAxis())
 	c.lastPriority.Store(req.GetPriority())
 	return &gatewaypb.SubmitResponse{JobId: "job-1"}, nil
 }
