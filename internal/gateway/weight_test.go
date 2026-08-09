@@ -21,8 +21,7 @@ import (
 // decode is bounded by min(max_tokens_cap, chatDecodeRatio × input)
 // for plain chat models, and by max_tokens_cap alone for thinking
 // models. Embed jobs are pure prefill; tokenize never runs the
-// transformer and gets the one-token floor. All paths return the same
-// axis name for now.
+// transformer and gets the one-token floor.
 func TestPredictCost(t *testing.T) {
 	const params uint64 = 1_000_000_000 // 1B for round-number arithmetic
 	tokenCost := flopsPerTokenPerParam * float64(params) / 1e9
@@ -35,13 +34,11 @@ func TestPredictCost(t *testing.T) {
 		job      *llamacpp.Job
 		thinking bool
 		wantCost float64
-		wantAxis string
 	}{
 		{
 			name:     "nil job uses one-token floor",
 			job:      nil,
 			wantCost: tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Plain chat, 100-token prompt, default 1024 cap.
@@ -56,7 +53,6 @@ func TestPredictCost(t *testing.T) {
 				}},
 			},
 			wantCost: (100.0/prefillSpeedup + 300) * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Plain chat, 4-token prompt, 4096-token cap.
@@ -74,7 +70,6 @@ func TestPredictCost(t *testing.T) {
 				}},
 			},
 			wantCost: (4.0/prefillSpeedup + 12) * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Vision chat: an unrecognised-format image part (no parseable
@@ -94,7 +89,6 @@ func TestPredictCost(t *testing.T) {
 				}},
 			},
 			wantCost: float64(imageTokensDefault)/prefillSpeedup*tokenCost + chatDecodeNoCap,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Vision chat, small parseable image, no text. A 280×280 PNG
@@ -115,7 +109,6 @@ func TestPredictCost(t *testing.T) {
 				}},
 			},
 			wantCost: (100.0/prefillSpeedup + 150) * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Thinking model: same short prompt + huge cap as the
@@ -134,7 +127,6 @@ func TestPredictCost(t *testing.T) {
 			},
 			thinking: true,
 			wantCost: (4.0/prefillSpeedup + 4096) * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Thinking model with no max_tokens: defaultMaxTokensCap.
@@ -149,7 +141,6 @@ func TestPredictCost(t *testing.T) {
 			},
 			thinking: true,
 			wantCost: 100.0/prefillSpeedup*tokenCost + chatDecodeNoCap,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Empty-prompt chat (no tokens) falls back to the cap
@@ -163,7 +154,6 @@ func TestPredictCost(t *testing.T) {
 				Body: &llamacpp.Job_Chat{Chat: &llamacpp.ChatJob{}},
 			},
 			wantCost: chatDecodeNoCap,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			name: "embed: pure prefill (input bytes/4, discounted)",
@@ -172,7 +162,6 @@ func TestPredictCost(t *testing.T) {
 				Body: &llamacpp.Job_Embed{Embed: &llamacpp.EmbedJob{Input: strings.Repeat("x", 256)}},
 			},
 			wantCost: 64.0 / prefillSpeedup * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			name: "batch_embed: summed pure prefill",
@@ -184,7 +173,6 @@ func TestPredictCost(t *testing.T) {
 			},
 			// (128+256)/4 = 96 input tokens.
 			wantCost: 96.0 / prefillSpeedup * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Tokenize is a vocab lookup on the worker — no forward
@@ -196,7 +184,6 @@ func TestPredictCost(t *testing.T) {
 				Body: &llamacpp.Job_Tokenize{Tokenize: &llamacpp.TokenizeJob{Text: strings.Repeat("q", 80)}},
 			},
 			wantCost: tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			// Embed with thinking=true must still skip decode entirely
@@ -210,7 +197,6 @@ func TestPredictCost(t *testing.T) {
 			},
 			thinking: true,
 			wantCost: 64.0 / prefillSpeedup * tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 		{
 			name: "tiny job floors to one token (no decode for embed)",
@@ -220,14 +206,12 @@ func TestPredictCost(t *testing.T) {
 			},
 			// 2/4 = 0 input tokens → floored to 1 token of work.
 			wantCost: tokenCost,
-			wantAxis: q4kMatvecAxis,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotCost, gotAxis := predictCost(tt.job, params, tt.thinking, visionParams{})
+			gotCost := predictCost(tt.job, params, tt.thinking, visionParams{})
 			require.InDelta(t, tt.wantCost, gotCost, 1e-9)
-			require.Equal(t, tt.wantAxis, gotAxis)
 		})
 	}
 }
@@ -381,7 +365,7 @@ func TestPredictCost_FallbackParameterCount(t *testing.T) {
 		Kind: llamacpp.JobKind_JOB_KIND_EMBED,
 		Body: &llamacpp.Job_Embed{Embed: &llamacpp.EmbedJob{Input: "abcd"}}, // 1 token after /4
 	}
-	gotCost, _ := predictCost(job, 0, false, visionParams{})
+	gotCost := predictCost(job, 0, false, visionParams{})
 	want := 1.0 * flopsPerTokenPerParam * float64(fallbackParameterCount) / 1e9
 	require.InDelta(t, want, gotCost, 1e-6)
 }
@@ -419,138 +403,20 @@ func TestPredictCost_UnknownKindFloors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotCost, gotAxis := predictCost(tt.job, params, false, visionParams{})
+			gotCost := predictCost(tt.job, params, false, visionParams{})
 			// All four cases floor to a single token (no input, no
 			// decode), so cost == tokenCost. (chat-with-nil-body short-
 			// circuits at the kind switch on chat helpers, but the
 			// outer Job kind isn't CHAT until we touch Body — so
 			// jobExpectedDecodeTokens returns 0 here.)
 			require.InDelta(t, tokenCost, gotCost, 1e-9)
-			require.Equal(t, q4kMatvecAxis, gotAxis)
 		})
 	}
 }
 
-// estimateLoadBytes composes file size + KV cache (when GGUF metadata
-// is present) + activation scratch. The table covers the GGUF
-// completeness branches: full metadata, partial (no head_count_kv,
-// fallback to head_count), missing data (degrades to weights + scratch),
-// no primary file (returns 0 = unknown), and the default-context fall-
-// back when LoadHints.context_size is 0.
-func TestEstimateLoadBytes(t *testing.T) {
-	const gb = int64(1024 * 1024 * 1024)
-	const mb = int64(1024 * 1024)
-	tests := []struct {
-		name        string
-		fileBytes   int64
-		props       map[string]string
-		contextSize int32
-		wantBase    int64
-		wantPerSlot int64
-	}{
-		{
-			// 8B model, 32 layers × 4096 embed × 32 heads × 128 head_dim
-			// × 4096 ctx × 2 (K+V) × 2 (F16) = 2 GB per slot. Files
-			// = 5 GB → base = 5 GB + 0.5 GB scratch.
-			name:      "full metadata: base=weights+scratch, perSlot=KV",
-			fileBytes: 5 * gb,
-			props: map[string]string{
-				"layers":        "32",
-				"embedding":     "4096",
-				"head_count":    "32",
-				"head_count_kv": "32",
-			},
-			contextSize: 4096,
-			wantBase:    5*gb + 512*mb,
-			wantPerSlot: 2 * gb,
-		},
-		{
-			// head_count_kv absent → falls back to head_count (non-GQA).
-			name:      "head_count_kv absent falls back to head_count",
-			fileBytes: 5 * gb,
-			props: map[string]string{
-				"layers":     "32",
-				"embedding":  "4096",
-				"head_count": "32",
-			},
-			contextSize: 4096,
-			wantBase:    5*gb + 512*mb,
-			wantPerSlot: 2 * gb,
-		},
-		{
-			// GQA: head_count_kv smaller than head_count (e.g. Llama 3.1
-			// 70B has 64 heads, 8 KV heads → 8× smaller perSlot).
-			name:      "GQA: smaller head_count_kv shrinks perSlot",
-			fileBytes: 5 * gb,
-			props: map[string]string{
-				"layers":        "32",
-				"embedding":     "4096",
-				"head_count":    "32",
-				"head_count_kv": "8",
-			},
-			contextSize: 4096,
-			wantBase:    5*gb + 512*mb,
-			wantPerSlot: 512 * mb,
-		},
-		{
-			// Missing critical metadata → kvCacheBytes returns 0; base
-			// is still honest. MASS's projection will collapse to pool=1.
-			name:        "missing metadata: perSlot=0",
-			fileBytes:   5 * gb,
-			props:       nil,
-			contextSize: 4096,
-			wantBase:    5*gb + 512*mb,
-			wantPerSlot: 0,
-		},
-		{
-			// contextSize=0 → default 4096 substituted by the helper.
-			name:      "zero context_size uses default",
-			fileBytes: 5 * gb,
-			props: map[string]string{
-				"layers": "32", "embedding": "4096",
-				"head_count": "32", "head_count_kv": "32",
-			},
-			contextSize: 0,
-			wantBase:    5*gb + 512*mb,
-			wantPerSlot: 2 * gb,
-		},
-		{
-			// No file bytes → unknown. Returns zeros so MASS skips
-			// the eligibility check.
-			name:        "no file bytes returns zeros",
-			fileBytes:   0,
-			contextSize: 4096,
-			wantBase:    0,
-			wantPerSlot: 0,
-		},
-		{
-			// head_dim == 0 (embedding not a multiple of heads, or
-			// pathological metadata) → perSlot collapses to 0, no panic.
-			name:      "zero head_dim degrades gracefully",
-			fileBytes: 5 * gb,
-			props: map[string]string{
-				"layers": "32", "embedding": "16",
-				"head_count": "32", // 16/32 == 0 → head_dim==0
-			},
-			contextSize: 4096,
-			wantBase:    5*gb + 512*mb,
-			wantPerSlot: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotBase, gotPerSlot := estimateLoadBytes(tt.fileBytes, tt.props, tt.contextSize)
-			require.Equal(t, tt.wantBase, gotBase, "base")
-			require.Equal(t, tt.wantPerSlot, gotPerSlot, "perSlot")
-		})
-	}
-}
-
-// atoiUint64 is the gateway-private GGUF property parser. Test the
-// pure branches without touching the broader estimator. Empty strings,
-// non-digits, and overflow each have to return 0 so estimateLoadBytes
-// degrades gracefully rather than mis-computing KV.
+// atoiUint64 is the gateway-private GGUF property parser. Empty
+// strings, non-digits, and overflow each have to return 0 so the
+// vision-shape lookup degrades to its defaults.
 func TestAtoiUint64(t *testing.T) {
 	tests := []struct {
 		name string

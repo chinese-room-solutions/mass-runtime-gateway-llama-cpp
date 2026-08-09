@@ -117,10 +117,6 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 		DisplayName:       g.params.DisplayName,
 		Description:       g.params.Description,
 		GatewayApiVersion: gatewaypb.GatewayAPIVersion,
-		// Every llama-cpp worker is required to bench Q4_K matvec. MASS
-		// uses this axis as the fallback when a Submit names an axis the
-		// worker hasn't measured.
-		DefaultCostAxis: q4kMatvecAxis,
 	}, nil
 }
 

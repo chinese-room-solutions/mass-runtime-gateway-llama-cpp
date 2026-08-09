@@ -28,8 +28,7 @@ const bytesPerToken = 4
 // down before tiling, so a high-DPI scan tiles to a bounded token
 // count regardless of source resolution. Using raw dimensions
 // over-counted a 300-DPI page by ~9×, which dominated the prefill
-// estimate and pinned the scheduler's correction EWMA at its clamp
-// ceiling.
+// estimate.
 //
 // The budget is expressed in output TOKENS, mirroring llama.cpp:
 // tools/mtmd/clip.cpp caps the Qwen-VL family (and most current
@@ -42,9 +41,7 @@ const bytesPerToken = 4
 // 4× pixel-unshuffle merge). When the submit carries a companion mmproj
 // the values read from its GGUF header override the defaults — see
 // [visionParams]; Qwen3-VL moved to 16-pixel patches, a (16/14)² ≈ 1.3×
-// difference the metadata resolves exactly. The scheduler's
-// per-(worker,axis) throughput EWMA corrects any residual bias from
-// real completions.
+// difference the metadata resolves exactly.
 const (
 	visionPatchPixels  = 14
 	visionMergeFactor  = 4
@@ -83,31 +80,20 @@ func (vp visionParams) maxPixels() int {
 	return visionMaxTokens * vp.patch() * vp.patch() * vp.merge()
 }
 
-// q4kMatvecAxis is the throughput-axis name every llama-cpp worker is
-// required to bench. Declared in InitResponse.DefaultCostAxis so MASS
-// can fall back to it when a Submit names an axis the worker hasn't
-// measured.
-const q4kMatvecAxis = "q4k_matvec"
-
 // flopsPerTokenPerParam is the well-known transformer forward-pass
 // physics constant: roughly 2 FLOPs per token per parameter, one
 // multiply plus one add. The cost emitted by [predictCost] has units
-// of FLOPs / 1e9 (i.e. GFLOPs) at decode efficiency, so MASS dividing
-// by the worker's q4k_matvec GFLOPS yields predicted wall-clock
-// seconds on that worker.
+// of FLOPs / 1e9 (i.e. GFLOPs) at decode efficiency — the model-native
+// unit this runtime prices every job in, bench payloads included.
 const flopsPerTokenPerParam = 2.0
 
 // prefillSpeedup discounts input (prefill) tokens relative to decode
-// tokens in the cost formula. The q4k_matvec bench the cost divides by
-// is a batch-1 matvec chain — the memory-bound decode regime. Prefill
-// processes the whole prompt as batched matmuls that run far faster
-// per token on the same device: ~4-8× on CPU, ~15-50× on discrete
-// GPUs. Pricing prefill at matvec throughput over-predicted
-// long-prompt jobs by up to an order of magnitude — a shape-dependent
-// bias the scheduler's per-(worker, axis) EWMA cannot learn away,
-// since it corrects all jobs on a worker by one scalar (clamped to
-// ±4×). 12 is the geometric middle of the observed range; the EWMA
-// absorbs the ≤4× per-worker residual at either extreme.
+// tokens in the cost formula. Decode is a batch-1 matvec chain — the
+// memory-bound regime. Prefill processes the whole prompt as batched
+// matmuls that run far faster per token on the same device: ~4-8× on
+// CPU, ~15-50× on discrete GPUs. Pricing prefill at decode efficiency
+// over-predicted long-prompt jobs by up to an order of magnitude. 12
+// is the geometric middle of the observed range.
 const prefillSpeedup = 12
 
 // fallbackParameterCount is used when the GGUF header didn't carry a
@@ -125,9 +111,11 @@ const fallbackParameterCount uint64 = 7_000_000_000
 // behaviour.
 const defaultMaxTokensCap = 1024
 
-// predictCost returns (cost, axis) for a llama-cpp job. cost has units
-// of GFLOPs at decode (matvec) efficiency; MASS divides by the worker's
-// q4k_matvec throughput in GFLOPS to get predicted wall-clock seconds.
+// predictCost returns the cost of a llama-cpp job in this runtime's
+// model-native unit: GFLOPs at decode (matvec) efficiency. MASS divides
+// it by the model's benched units/sec on the chosen worker to get
+// predicted wall-clock seconds — so every cost this gateway emits,
+// Submit and [Gateway.AuthorBenchPayload] alike, must come from here.
 //
 // Formula:
 //
@@ -150,10 +138,7 @@ const defaultMaxTokensCap = 1024
 // never runs the transformer at all — the worker answers it with a
 // vocab lookup — so it gets the nominal one-token floor, which also
 // keeps Cost > 0 (a MASS submit invariant).
-//
-// Always returns axis = [q4kMatvecAxis]; future per-job axis selection
-// is gated on workers learning to bench them.
-func predictCost(job *llamacpp.Job, parameterCount uint64, thinking bool, vp visionParams) (float64, string) {
+func predictCost(job *llamacpp.Job, parameterCount uint64, thinking bool, vp visionParams) float64 {
 	if parameterCount == 0 {
 		parameterCount = fallbackParameterCount
 	}
@@ -169,8 +154,7 @@ func predictCost(job *llamacpp.Job, parameterCount uint64, thinking bool, vp vis
 			work = w
 		}
 	}
-	cost := work * flopsPerTokenPerParam * float64(parameterCount) / 1e9
-	return cost, q4kMatvecAxis
+	return work * flopsPerTokenPerParam * float64(parameterCount) / 1e9
 }
 
 // jobInputTokens estimates input-token count from a job's payload,
@@ -216,9 +200,8 @@ const chatDecodeRatio = 3
 // roughly proportional to image content) but with less leverage than text:
 // a page image tiles to ~1.2k tokens, yet the reply doesn't run as long as
 // 1.2k tokens of prose would imply. Halving the media contribution keeps it
-// scaling smoothly with image size without the ~2× over-predict that pinned
-// the scheduler's correction EWMA on vision jobs (full media count) — and
-// the EWMA absorbs the modest residual.
+// scaling smoothly with image size without the ~2× over-predict a full media
+// count produced on vision jobs.
 const mediaDecodeDivisor = 2
 
 // jobExpectedDecodeTokens estimates how many output tokens a job will
@@ -392,79 +375,10 @@ func jpegDimensions(data []byte) (w, h int, ok bool) {
 	return 0, 0, false
 }
 
-// kvCacheDtypeBytes is the per-element size of the KV cache. llama.cpp
-// defaults to F16 (2 bytes); cache_type overrides (q8_0, q4_0) would
-// shrink this. We use F16 as the upper bound so MASS's eligibility
-// check biases toward "won't fit" rather than dispatching a job that
-// then OOMs at load.
-const kvCacheDtypeBytes = 2
-
-// defaultContextSize mirrors DefaultContextSize in the gateway —
-// 4096 when LoadHints.context_size is 0.
-const defaultContextSize = 4096
-
-// activationScratchBytes covers per-decode activations, KV-buffer
-// alignment slop, and CUDA/ROCm/Vulkan working memory. 512 MiB is a
-// conservative one-size-fits-all bound — small models lose some
-// precision; large models stay well within. Adjust if benchmarks
-// show systematic under-fit on any worker tier.
-const activationScratchBytes = 512 * 1024 * 1024
-
-// estimateLoadBytes returns the gateway's best guess at device memory
-// the load will consume on the worker, split into a fixed cost paid
-// once and an incremental cost paid per concurrent slot.
-//
-//	base    = file_bytes + activation_scratch_bytes
-//	perSlot = kv_cache_bytes(props, ctx)
-//
-// MASS combines them with the chosen worker's free memory to project
-// the actual post-grow pool size and the resulting load wall-clock.
-//
-// Returns (0, 0) when fileBytes is non-positive (no weights to size
-// against — MASS treats 0 as "skip the eligibility check and fall
-// back to pay-on-failure"). Returns (base, 0) when GGUF metadata is
-// too sparse to size KV honestly; the projection collapses to pool=1.
-func estimateLoadBytes(fileBytes int64, props map[string]string, contextSize int32) (base, perSlot int64) {
-	if fileBytes <= 0 {
-		return 0, 0
-	}
-	if contextSize <= 0 {
-		contextSize = defaultContextSize
-	}
-	base = fileBytes + int64(activationScratchBytes)
-	perSlot = kvCacheBytes(props, contextSize)
-	return base, perSlot
-}
-
-// kvCacheBytes returns the projected KV cache footprint for one
-// context slot at the given context size. Returns 0 when any required
-// GGUF field is missing — callers treat that as "no per-slot term"
-// and the pool-size projection downstream collapses to a single slot.
-func kvCacheBytes(props map[string]string, contextSize int32) int64 {
-	layers := atoiUint64(props["layers"])
-	embedding := atoiUint64(props["embedding"])
-	heads := atoiUint64(props["head_count"])
-	if layers == 0 || embedding == 0 || heads == 0 {
-		return 0
-	}
-	headDim := embedding / heads
-	if headDim == 0 {
-		return 0
-	}
-	// head_count_kv defaults to head_count when GGUF doesn't carry it
-	// (non-GQA architectures store keys for every head).
-	kvHeads := atoiUint64(props["head_count_kv"])
-	if kvHeads == 0 {
-		kvHeads = heads
-	}
-	const kAndV = 2
-	return int64(kAndV) * int64(layers) * int64(contextSize) * int64(kvHeads) * int64(headDim) * int64(kvCacheDtypeBytes)
-}
-
 // atoiUint64 parses a base-10 unsigned integer string; returns 0 on
 // empty or unparseable input. Used to lift props (map[string]string,
 // the catalogue's runtime-agnostic shape) into the numeric form the
-// memory estimator needs.
+// vision-shape lookup needs.
 func atoiUint64(s string) uint64 {
 	if s == "" {
 		return 0
