@@ -40,6 +40,7 @@ type Gateway struct {
 	schedConn *grpc.ClientConn // brokered connection to MASS's MassScheduler
 	scheduler *sched.Client    // typed wrapper over schedConn
 	cache     *metadataCache   // GGUF parse cache (memory + on-disk under dataDir)
+	h         *handlers        // shared dispatch helpers (also serve the typed HTTP + gRPC APIs)
 	router    http.Handler     // built once Init has run; routes /mass.llama-cpp.* + /v1/*
 	grpcSrv   *grpc.Server     // typed LlamaCppService; ServeHTTP-mounted for gRPC requests
 }
@@ -103,9 +104,10 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 		cache:       g.cache,
 		logger:      g.logger,
 	}
+	g.h = newHandlers(deps)
 	g.router = newRouter(deps)
 	g.grpcSrv = grpc.NewServer()
-	llamacppv1.RegisterLlamaCppServiceServer(g.grpcSrv, newGRPCServer(newHandlers(deps)))
+	llamacppv1.RegisterLlamaCppServiceServer(g.grpcSrv, newGRPCServer(g.h))
 	g.mu.Unlock()
 
 	g.logger.Info().Str("data_dir", req.GetDataDir()).Str("models_dir", req.GetModelsDir()).Str("log_level", req.GetLogLevel()).Msg("gateway initialised")

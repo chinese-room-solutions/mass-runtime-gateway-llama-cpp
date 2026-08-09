@@ -51,6 +51,13 @@ func TestModelRPCs_RefuseBeforeInit(t *testing.T) {
 			},
 		},
 		{
+			name: "AuthorBenchPayload",
+			call: func() error {
+				_, err := g.AuthorBenchPayload(ctx, &gatewaypb.AuthorBenchPayloadRequest{ModelId: "g/a.gguf"})
+				return err
+			},
+		},
+		{
 			name: "RenameGroup",
 			call: func() error {
 				_, err := g.RenameGroup(ctx, &gatewaypb.RenameGroupRequest{Id: "some-group", NewName: "New"})
