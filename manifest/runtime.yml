@@ -1,5 +1,5 @@
 runtime_name: llama-cpp
-version: 0.1.0
+version: 0.2.1
 display_name: llama.cpp
 description: |
   Runtime gateway for llama.cpp-family inference workers (mass-worker-llama-cpp).
