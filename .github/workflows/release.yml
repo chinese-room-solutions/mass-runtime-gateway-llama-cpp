@@ -14,7 +14,31 @@ env:
   GOPRIVATE: github.com/chinese-room-solutions/*
 
 jobs:
+  # The manifest's version is what an installed gateway reports to MASS — the
+  # key a worker's compatible range is matched against. It is not derived from
+  # the tag (no -X ldflag; the binary reads runtime.yml), so nothing but this
+  # check stops a release shipping yesterday's version. v0.2.0 did exactly
+  # that: tagged 0.2.0, manifest still 0.1.0, and every worker lookup for the
+  # pair 404'd. Fails fast, before three builds.
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Manifest version matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(sed -n 's/^version:[[:space:]]*//p' manifest/runtime.yml | head -1 | tr -d '"'"'"' ')"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error file=manifest/runtime.yml::manifest version '$manifest' != tag '$tag'; bump manifest/runtime.yml before tagging"
+            exit 1
+          fi
+          echo "manifest version $manifest matches tag $GITHUB_REF_NAME"
+
   package:
+    needs: manifest
     name: package (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
