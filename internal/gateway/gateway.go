@@ -13,6 +13,7 @@ import (
 
 	"github.com/KernelPryanic/ctxerr"
 	gatewaypb "github.com/chinese-room-solutions/mass-proto/gen/go/gateway"
+	"github.com/chinese-room-solutions/mass-proto/gen/go/protocol"
 	llamacppv1 "github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/gen/go/llama_cpp/v1"
 	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/sched"
 	"github.com/chinese-room-solutions/mass-sdk/gatewayhttp"
@@ -61,13 +62,14 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 	if req.GetMassSchedulerBrokerId() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "init: mass_scheduler_broker_id is required")
 	}
-	// Refuse to start when MASS speaks a wire version the gateway
-	// wasn't built against. Gateway and MASS pin to the same constant
-	// today; mismatches mean one side is out of date.
-	if req.GetMassGatewayApiVersion() != gatewaypb.GatewayAPIVersion {
+	// Pick the highest wire protocol both sides speak; refuse to start on an
+	// empty intersection. Distribution-level semver compat lives in the
+	// registry index — this guards only the plugin wire contract.
+	picked, ok := protocol.Negotiate(gatewaypb.SupportedProtocols, req.GetSupportedProtocols())
+	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"gateway api version mismatch: MASS speaks %d, gateway built against %d",
-			req.GetMassGatewayApiVersion(), gatewaypb.GatewayAPIVersion)
+			"no common gateway protocol: MASS speaks %v, gateway speaks %v",
+			req.GetSupportedProtocols(), gatewaypb.SupportedProtocols)
 	}
 
 	if level, err := zerolog.ParseLevel(req.GetLogLevel()); err == nil && req.GetLogLevel() != "" {
@@ -114,11 +116,11 @@ func (g *Gateway) Init(ctx context.Context, req *gatewaypb.InitRequest) (*gatewa
 
 	_ = ctx
 	return &gatewaypb.InitResponse{
-		RuntimeName:       g.params.RuntimeName,
-		Version:           g.params.Version,
-		DisplayName:       g.params.DisplayName,
-		Description:       g.params.Description,
-		GatewayApiVersion: gatewaypb.GatewayAPIVersion,
+		RuntimeName: g.params.RuntimeName,
+		Version:     g.params.Version,
+		DisplayName: g.params.DisplayName,
+		Description: g.params.Description,
+		Protocol:    picked,
 	}, nil
 }
 
