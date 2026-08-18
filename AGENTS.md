@@ -3,7 +3,9 @@
 - Delegate the rest, at most 2 subagents at a time: work spanning several files, needing its own exploration, or running long. Each starts cold — hand it the diagnosis, file refs, design, environment setup, and what to verify.
 - Subagent: do the work yourself. Never spawn further agents.
 - Scale verification to the risk of being wrong. A cosmetic markup/CSS change needs a rebuild and one look at it; a cross-engine, multi-file, or unproven diagnosis needs measured numbers. Over-specified verification is how a small fix gets expensive.
+- Verify the local checkout is current before doing any work: `git fetch` and compare against the remote, which is the source of truth. Everything concluded from a stale or diverged checkout is suspect.
 - Verify a diagnosis against current code before fixing it. One commit per fix.
+- Don't spam commits. While nothing is pushed, a commit that proves not to be what we wanted gets amended, not followed by a fixup.
 - Commit messages: as short as the change allows — one subject line, a body only for a why the diff doesn't show. No `Co-Authored-By` or any other trailer.
 
 ## Code quality
