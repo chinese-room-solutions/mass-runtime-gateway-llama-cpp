@@ -13,6 +13,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/KernelPryanic/golog"
 	"github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp/internal/gateway"
 	sdkmanifest "github.com/chinese-room-solutions/mass-sdk/manifest"
+	"github.com/chinese-room-solutions/mass-sdk/proclife"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 )
@@ -50,6 +52,15 @@ func main() {
 	// installed when launching us.
 	logger := golog.New(false, io.MultiWriter(os.Stderr))
 	zerolog.SetGlobalLevel(zerolog.InfoLevel) // overridden by Init.LogLevel
+
+	// go-plugin hands us MASS's own stdin rather than a pipe, so a MASS that
+	// dies without stopping us leaves no signal behind and we would keep a model
+	// resident with nobody left to talk to. On Windows MASS puts us in a job
+	// object; everywhere else this is what ends us.
+	go proclife.WatchParent(context.Background(), 0, func() {
+		logger.Warn().Msg("MASS exited; shutting down")
+		os.Exit(1)
+	})
 
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: gateway.Handshake,
