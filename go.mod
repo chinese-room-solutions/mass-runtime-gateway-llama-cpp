@@ -1,6 +1,6 @@
 module github.com/chinese-room-solutions/mass-runtime-gateway-llama-cpp
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/KernelPryanic/ctxerr v1.0.0
@@ -25,8 +25,8 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	gopkg.in/yaml.v3 v3.0.1
