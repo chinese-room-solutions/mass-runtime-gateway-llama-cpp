@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/chinese-room-solutions/mass-sdk v0.2.0
+	github.com/chinese-room-solutions/mass-sdk v0.4.0
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
